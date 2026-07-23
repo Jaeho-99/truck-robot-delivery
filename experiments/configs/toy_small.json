@@ -1,0 +1,41 @@
+{
+  "experiment": "toy_small",
+  "methods": ["exact", "alns"],
+  "instance_set": {
+    "type": "grid",
+    "seeds": [1, 2, 3, 4, 5],
+    "beta_robot": 3,
+    "grids": [
+      {
+        "name": "small4",
+        "grid_x": 2,
+        "grid_y": 2,
+        "num_parking": 3,
+        "num_trucks": 2,
+        "num_robots": 2,
+        "num_parking_copies": 2,
+        "parking_avoid_radius": 4.5
+      },
+      {
+        "name": "small6",
+        "grid_x": 3,
+        "grid_y": 2,
+        "num_parking": 4,
+        "num_trucks": 2,
+        "num_robots": 2,
+        "num_parking_copies": 2,
+        "parking_avoid_radius": 4.5
+      }
+    ]
+  },
+  "exact": {
+    "time_limit_s": 300,
+    "mip_gap": 0.0
+  },
+  "alns": {
+    "iters": 3000,
+    "seed": 0
+  },
+  "figures": true,
+  "check_evaluator_consistency": true
+}
