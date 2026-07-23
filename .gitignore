@@ -1,0 +1,17 @@
+# experiment outputs (directory structure kept via .gitkeep)
+results/*
+!results/.gitkeep
+
+# python
+__pycache__/
+*.pyc
+*.egg-info/
+
+# solver
+gurobi.log
+
+# os
+.DS_Store
+
+# temporary learning/debug scripts
+temp_*
