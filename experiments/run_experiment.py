@@ -199,12 +199,14 @@ def run_alns(cfg, dirs, name, inst, e_c, l_c, figures):
     iters = acfg.get("iters", 3000)
     alns_seed = acfg.get("seed", 0)
     alns_tl = acfg.get("time_limit_s")
+    selector = acfg.get("selector", "roulette")
     pr = Params(inst, e_c, l_c, beta_robot=inst["beta_robot"])
-    print(f"[alns  {name}] iters {iters}"
+    print(f"[alns  {name}] iters {iters} ({selector})"
           f"{f' (TL {alns_tl}s)' if alns_tl else ''} ...", flush=True)
     t0 = time.time()
     best, cost, stats = solve_alns(pr, iters=iters, seed=alns_seed,
-                                   time_limit_s=alns_tl)
+                                   time_limit_s=alns_tl,
+                                   selector=selector)
     rt = time.time() - t0
     ntr, nrb, rc = fleet_stats(best)
     _, feas, brk, _ = eval_solution(pr, best)
@@ -219,6 +221,8 @@ def run_alns(cfg, dirs, name, inst, e_c, l_c, figures):
                    "obj": cost, "runtime_s": rt, "feasible": feas,
                    "iters": iters, "iters_done": stats["iters_done"],
                    "time_limit_s": alns_tl, "alns_seed": alns_seed,
+                   "selector": selector,
+                   "q_summary": stats.get("q_summary"),
                    "init_obj": stats["init_cost"],
                    "improve_pct": stats["improve_pct"],
                    "trucks": ntr, "robots": nrb, "robot_cust": rc,
