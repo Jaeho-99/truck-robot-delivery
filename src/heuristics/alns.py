@@ -24,6 +24,7 @@ from collections import defaultdict
 from ..instance import (EMIS_ROBOT_KM, EMIS_TRUCK_KM, GFUEL_ROBOT_KM,
                         GFUEL_TRUCK_KM, V_ROBOT, V_TRUCK)
 from .operators import DESTROY, repair_greedy, repair_regret2
+from .qlearning import N_STATES, QTable, get_state
 from .solution import Solution, eval_solution, eval_truck
 
 # Robot-candidate threshold theta: only customers with a normalized
@@ -304,7 +305,8 @@ def roulette(weights, rng):
 
 def solve_alns(pr, iters=3000, seed=0, segment=None,
                sigma=(33.0, 9.0, 13.0), reaction=0.1, w_start=0.25,
-               time_limit_s=None, initial=None):
+               time_limit_s=None, initial=None, selector="roulette",
+               q_params=None):
     """Run ALNS and return (best_solution, best_cost, stats).
 
     ``initial``: initial-solution constructor ``f(pr, rng) -> Solution``
@@ -312,6 +314,15 @@ def solve_alns(pr, iters=3000, seed=0, segment=None,
     ``time_limit_s``: wall-clock cap in seconds; exceeding it stops the
     run early (for large instances). The cooling schedule stays based
     on ``iters``, so an early stop may end in the hot phase.
+    ``selector``: operator-selection scheme — "roulette" (adaptive
+    weights, default), "qlearning" (tabular Q-learning over
+    (destroy, repair) pairs with the sigma scores as rewards; see
+    qlearning.py) or "gnn_dqn" (trained GNN+DQN policy, greedy; see
+    src/gnn_dqn, requires torch).
+    ``q_params``: optional selector-specific dict — QTable keyword
+    overrides for "qlearning" (eta, gamma, eps_start, eps_end,
+    eps_decay_iters), {"model_path", "device"} for "gnn_dqn";
+    ignored under "roulette".
     """
     t_start = time.time()
     rng = random.Random(seed)
@@ -351,13 +362,36 @@ def solve_alns(pr, iters=3000, seed=0, segment=None,
     rCnt = [0] * len(repair_ops)
     seen = set()
 
+    # Q-learning selection over (destroy, repair) pairs (see
+    # qlearning.py). Epsilon decays over the first half of the run.
+    use_q = selector == "qlearning"
+    if use_q:
+        qkw = {"eps_decay_iters": max(1, iters // 2), "seed": seed + 1}
+        qkw.update(q_params or {})
+        qtab = QTable(N_STATES, len(DESTROY) * len(repair_ops), **qkw)
+        state = get_state(pr, cur)
+    # Trained GNN+DQN policy (inference only; lazy import keeps this
+    # module usable without torch).
+    use_gnn = selector == "gnn_dqn"
+    if use_gnn:
+        from ..gnn_dqn.selector_gnn import GNNSelector
+        gsel = GNNSelector(**(q_params or {}))
+        best_it = 0
+
     it_done = 0
     for it in range(1, iters + 1):
         if time_limit_s is not None and time.time() - t_start > time_limit_s:
             break
         it_done = it
-        di = roulette(dW, rng)
-        ri = roulette(rW, rng)
+        if use_q:
+            act = qtab.select(state, it)
+            di, ri = divmod(act, len(repair_ops))
+        elif use_gnn:
+            di, ri = gsel.select(pr, cur, it / iters, it - 1 - best_it,
+                                 cur_cost, best_cost)
+        else:
+            di = roulette(dW, rng)
+            ri = roulette(rW, rng)
         cand = cur.clone()
         q = rng.randint(qmin, qmax)
         pool = DESTROY[di][1](pr, cand, q, rng)
@@ -367,6 +401,8 @@ def solve_alns(pr, iters=3000, seed=0, segment=None,
         rCnt[ri] += 1
 
         if not ok:      # discard coverage/custody/range violations
+            if use_q:   # cur unchanged: zero reward, same state
+                qtab.update(state, act, 0.0, state)
             T *= cooling
             continue
 
@@ -377,6 +413,8 @@ def solve_alns(pr, iters=3000, seed=0, segment=None,
         accept = False
         if cand_cost < best_cost - 1e-9:
             best, best_cost = cand.clone(), cand_cost
+            if use_gnn:
+                best_it = it
             reward = sigma[0]
             accept = True
         elif cand_cost < cur_cost - 1e-9 and key not in seen:
@@ -391,10 +429,15 @@ def solve_alns(pr, iters=3000, seed=0, segment=None,
         seen.add(key)
         if accept:
             cur, cur_cost = cand, cand_cost
+        if use_q:
+            s_next = get_state(pr, cur) if accept else state
+            qtab.update(state, act, reward, s_next)
+            state = s_next
         dScore[di] += reward
         rScore[ri] += reward
 
-        if it % segment == 0:       # adaptive weight update
+        if (not use_q and not use_gnn
+                and it % segment == 0):         # adaptive weight update
             for i in range(len(DESTROY)):
                 if dCnt[i] > 0:
                     dW[i] = (dW[i] * (1 - reaction)
@@ -410,10 +453,13 @@ def solve_alns(pr, iters=3000, seed=0, segment=None,
         T *= cooling
 
     stats = {"init_cost": init_cost, "best_cost": best_cost,
-             "iters_done": it_done,
+             "iters_done": it_done, "selector": selector,
              "improve_pct": 100.0 * (init_cost - best_cost) / init_cost,
              "destroy_w": dict(zip([d[0] for d in DESTROY],
                                    [round(x, 3) for x in dW])),
              "repair_w": dict(zip([r[0] for r in repair_ops],
                                   [round(x, 3) for x in rW]))}
+    if use_q:
+        labels = [f"{d[0]}+{r[0]}" for d in DESTROY for r in repair_ops]
+        stats["q_summary"] = qtab.summary(labels)
     return best, best_cost, stats
