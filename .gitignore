@@ -1,11 +1,14 @@
 # experiment outputs (directory structure kept via .gitkeep)
 results/*
 !results/.gitkeep
+*.csv
+*.json
 
 # python
 __pycache__/
 *.pyc
 *.egg-info/
+.venv/*
 
 # solver
 gurobi.log
