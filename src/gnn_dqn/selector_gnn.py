@@ -6,6 +6,8 @@ Adapter for the selector plug-in of solve_alns:
 The same single checkpoint is used for all instance sizes.
 """
 
+import dataclasses
+
 import torch
 from torch_geometric.data import Batch
 
@@ -19,10 +21,17 @@ class GNNSelector:
     def __init__(self, model_path, device="cpu"):
         ckpt = torch.load(model_path, map_location=device,
                           weights_only=False)
-        self.cfg = Config(**ckpt["config"])
+        known = {f.name for f in dataclasses.fields(Config)}
+        self.cfg = Config(**{k: v for k, v in ckpt["config"].items()
+                             if k in known})
         self.cfg.device = device
         self.net = QNet(self.cfg).to(device)
-        self.net.load_state_dict(ckpt["model"])
+        try:
+            self.net.load_state_dict(ckpt["model"])
+        except RuntimeError as e:
+            raise RuntimeError(
+                "checkpoint was trained with the old vanilla head; "
+                "retrain required") from e
         self.net.eval()
         self.builder = GraphBuilder(ckpt["norms"], self.cfg)
         self.device = device

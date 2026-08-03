@@ -88,6 +88,37 @@ def test_state_dim_and_batching(pr, norms, cfg):
     assert torch.isfinite(q).all()
 
 
+def test_dueling_mean_equals_value(pr, norms, cfg):
+    """Q = V + (A - mean A) implies mean_a Q(s,a) == V(s)."""
+    from torch_geometric.data import Batch
+    from src.gnn_dqn.encoder import QNet
+    net = QNet(cfg)
+    g1, _ = _graph(pr, norms, cfg, seed=0)
+    g2, _ = _graph(pr, norms, cfg, seed=1)
+    batch = Batch.from_data_list([g1, g2])
+    with torch.no_grad():
+        q = net(batch)
+        v, a = net.value_advantage(batch)
+    assert q.shape == (2, 9) and torch.isfinite(q).all()
+    assert torch.allclose(q.mean(dim=1), v.squeeze(1), atol=1e-5)
+    assert torch.allclose(a.mean(dim=1), torch.zeros(2), atol=1e-5)
+
+
+def test_dueling_update_reaches_all_streams(pr, norms, cfg):
+    """One update must move trunk, V and A stream parameters."""
+    agent = DQNAgent(cfg, total_steps=1000)
+    g, _ = _graph(pr, norms, cfg)
+    for i in range(70):
+        agent.buffer.push(g, i % 9, 0.1 * (i % 3), g)
+    head = agent.online.head
+    before = {name: p.clone() for name, p in head.named_parameters()}
+    agent.update()
+    for stream in ("trunk", "V", "A"):
+        assert any((before[n] != p).any()
+                   for n, p in head.named_parameters()
+                   if n.startswith(stream)), f"{stream} unchanged"
+
+
 def test_dqn_update_changes_params(pr, norms, cfg):
     agent = DQNAgent(cfg, total_steps=1000)
     g, _ = _graph(pr, norms, cfg)

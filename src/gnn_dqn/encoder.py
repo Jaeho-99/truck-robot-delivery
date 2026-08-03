@@ -59,18 +59,42 @@ class SolutionEncoder(nn.Module):
                           global_max_pool(h_all, b_all)], dim=1)
 
 
+class DuelingHead(nn.Module):
+    """Q(s,a) = V(s) + (A(s,a) - mean_{a'} A(s,a')).
+
+    The advantage mean is subtracted so that the V/A decomposition
+    is identifiable (Wang et al., 2016).
+    """
+
+    def __init__(self, in_dim, n_actions, hidden=64):
+        super().__init__()
+        self.trunk = nn.Sequential(nn.Linear(in_dim, hidden), nn.GELU())
+        self.V = nn.Sequential(nn.Linear(hidden, hidden), nn.GELU(),
+                               nn.Linear(hidden, 1))
+        self.A = nn.Sequential(nn.Linear(hidden, hidden), nn.GELU(),
+                               nn.Linear(hidden, n_actions))
+
+    def forward(self, s):                        # s: (B, in_dim)
+        z = self.trunk(s)
+        a = self.A(z)
+        return self.V(z) + (a - a.mean(dim=1, keepdim=True))
+
+    def value_advantage(self, s):
+        """(V(s), centered A(s,.)) for analysis — (B,1), (B,n_actions)."""
+        z = self.trunk(s)
+        a = self.A(z)
+        return self.V(z), a - a.mean(dim=1, keepdim=True)
+
+
 class QNet(nn.Module):
-    """Encoder + DQN head -> Q-values for the 9 operator pairs."""
+    """Encoder + Dueling DQN head -> Q-values for the 9 operator pairs."""
 
     def __init__(self, cfg):
         super().__init__()
         self.cfg = cfg
         self.encoder = SolutionEncoder(cfg) if cfg.use_graph else None
         in_dim = (2 * cfg.hidden_dim + G_DIM) if cfg.use_graph else G_DIM
-        self.head = nn.Sequential(
-            nn.Linear(in_dim, 64), nn.GELU(),
-            nn.Linear(64, 64), nn.GELU(),
-            nn.Linear(64, cfg.n_actions))
+        self.head = DuelingHead(in_dim, cfg.n_actions)
 
     def forward(self, data):
         g = data.g.view(-1, G_DIM)
@@ -78,3 +102,11 @@ class QNet(nn.Module):
             return self.head(g)
         s = torch.cat([self.encoder(data), g], dim=1)
         return self.head(s)
+
+    def value_advantage(self, data):
+        """(V(s), centered A(s,.)) of a batch, for policy analysis."""
+        g = data.g.view(-1, G_DIM)
+        if self.encoder is None:
+            return self.head.value_advantage(g)
+        s = torch.cat([self.encoder(data), g], dim=1)
+        return self.head.value_advantage(s)
