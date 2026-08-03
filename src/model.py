@@ -28,6 +28,7 @@ def run_model(inst, alpha_traffic, alpha_ped, e_c, l_c, model_name="toy",
               time_limit_sec=300, mip_gap=0.0, carbon_price=0.19,
               phi_hat=40.0, phi_truck=480.0, fixed_cost_hours=8.0,
               beta_truck=100, beta_robot=3, symmetry_breaking=True,
+              fix_binaries=None,
               threads=0, mip_focus=2, nodefile_gb=10, log_path=None):
     """Solve one instance; returns a result dict.
 
@@ -467,6 +468,20 @@ def run_model(inst, alpha_traffic, alpha_ped, e_c, l_c, model_name="toy",
                                       for i in N0 if (k, i, p_nxt) in x)
                 m.addConstr(use_nxt <= use_cur)
 
+    # -------- optional binary fixing (verification mode) --------
+    # fix_binaries = {"x": {(k, i, j)}, "y": {(k, r, i, j)},
+    #                 "u": {k}, "uhat": {(k, r)}}: pins every routing/
+    # assignment binary to the given support (all others to 0) so the
+    # MILP re-derives loads/timing/lateness for a heuristic solution.
+    # Use symmetry_breaking=False with this — the valid inequalities
+    # assume canonical truck/robot/copy ordering.
+    if fix_binaries is not None:
+        for fam, vs in (("x", x), ("y", y), ("u", u), ("uhat", uhat)):
+            keep = set(fix_binaries.get(fam, ()))
+            for key, v in vs.items():
+                val = 1.0 if key in keep else 0.0
+                v.lb = v.ub = val
+
     m.update()      # apply lazy updates before reading model size
     n_vars, n_constrs = m.NumVars, m.NumConstrs
     m.optimize()
@@ -475,6 +490,11 @@ def run_model(inst, alpha_traffic, alpha_ped, e_c, l_c, model_name="toy",
         res = {"name": model_name, "status": int(m.Status), "obj": None,
                "runtime_s": m.Runtime, "n_vars": n_vars,
                "n_constrs": n_constrs}
+        if fix_binaries is not None and m.Status == GRB.INFEASIBLE:
+            # identify the violated constraint family for diagnostics
+            m.computeIIS()
+            res["iis"] = [c.ConstrName for c in m.getConstrs()
+                          if c.IISConstr][:100]
         m.dispose()
         return res
 
