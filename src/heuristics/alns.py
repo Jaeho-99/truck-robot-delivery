@@ -362,6 +362,15 @@ def solve_alns(pr, iters=3000, seed=0, segment=None,
     rCnt = [0] * len(repair_ops)
     seen = set()
 
+    # Instrumentation (timers/counters only — never touches rng, so
+    # results stay byte-identical to the uninstrumented loop).
+    n_actions = len(DESTROY) * len(repair_ops)
+    pair_cnt = [0] * n_actions          # a = di * len(repair_ops) + ri
+    pair_time = [0.0] * n_actions       # destroy+repair+eval seconds
+    sel_time = 0.0                      # selector overhead seconds
+    accept_cnt = infeas_cnt = best_updates = best_hit_it = 0
+    best_trace = []                     # (iter, elapsed_s, best_cost)
+
     # Q-learning selection over (destroy, repair) pairs (see
     # qlearning.py). Epsilon decays over the first half of the run.
     use_q = selector == "qlearning"
@@ -383,6 +392,7 @@ def solve_alns(pr, iters=3000, seed=0, segment=None,
         if time_limit_s is not None and time.time() - t_start > time_limit_s:
             break
         it_done = it
+        t_sel = time.perf_counter()
         if use_q:
             act = qtab.select(state, it)
             di, ri = divmod(act, len(repair_ops))
@@ -392,17 +402,25 @@ def solve_alns(pr, iters=3000, seed=0, segment=None,
         else:
             di = roulette(dW, rng)
             ri = roulette(rW, rng)
+        sel_time += time.perf_counter() - t_sel
+        a_idx = di * len(repair_ops) + ri
+        t_op = time.perf_counter()      # clone+destroy+repair+eval
         cand = cur.clone()
         q = rng.randint(qmin, qmax)
         pool = DESTROY[di][1](pr, cand, q, rng)
         repair_ops[ri][1](pr, cand, pool, rng)
         cand_cost, ok, _, _ = eval_solution(pr, cand)
+        pair_cnt[a_idx] += 1
+        pair_time[a_idx] += time.perf_counter() - t_op
         dCnt[di] += 1
         rCnt[ri] += 1
 
         if not ok:      # discard coverage/custody/range violations
+            infeas_cnt += 1
             if use_q:   # cur unchanged: zero reward, same state
+                t_sel = time.perf_counter()
                 qtab.update(state, act, 0.0, state)
+                sel_time += time.perf_counter() - t_sel
             T *= cooling
             continue
 
@@ -415,6 +433,10 @@ def solve_alns(pr, iters=3000, seed=0, segment=None,
             best, best_cost = cand.clone(), cand_cost
             if use_gnn:
                 best_it = it
+            best_updates += 1
+            best_hit_it = it
+            best_trace.append((it, round(time.time() - t_start, 3),
+                               round(cand_cost, 6)))
             reward = sigma[0]
             accept = True
         elif cand_cost < cur_cost - 1e-9 and key not in seen:
@@ -428,11 +450,14 @@ def solve_alns(pr, iters=3000, seed=0, segment=None,
                     reward = sigma[2]
         seen.add(key)
         if accept:
+            accept_cnt += 1
             cur, cur_cost = cand, cand_cost
         if use_q:
+            t_sel = time.perf_counter()
             s_next = get_state(pr, cur) if accept else state
             qtab.update(state, act, reward, s_next)
             state = s_next
+            sel_time += time.perf_counter() - t_sel
         dScore[di] += reward
         rScore[ri] += reward
 
@@ -458,7 +483,18 @@ def solve_alns(pr, iters=3000, seed=0, segment=None,
              "destroy_w": dict(zip([d[0] for d in DESTROY],
                                    [round(x, 3) for x in dW])),
              "repair_w": dict(zip([r[0] for r in repair_ops],
-                                  [round(x, 3) for x in rW]))}
+                                  [round(x, 3) for x in rW])),
+             # instrumentation (a = destroy_index * 3 + repair_index)
+             "pair_labels": [f"{d[0]}+{r[0]}" for d in DESTROY
+                             for r in repair_ops],
+             "action_hist": pair_cnt,
+             "pair_time_s": [round(x, 3) for x in pair_time],
+             "selector_overhead_s": round(sel_time, 3),
+             "accept_count": accept_cnt,
+             "infeasible_count": infeas_cnt,
+             "best_update_count": best_updates,
+             "best_first_hit_iter": best_hit_it,
+             "best_trace": best_trace}
     if use_q:
         labels = [f"{d[0]}+{r[0]}" for d in DESTROY for r in repair_ops]
         stats["q_summary"] = qtab.summary(labels)
