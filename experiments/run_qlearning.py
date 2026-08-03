@@ -49,8 +49,12 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO_ROOT)
 
 from src import instance                                  # noqa: E402
-from src.heuristics import Params, solve_alns             # noqa: E402
-from src.utils import write_csv                           # noqa: E402
+from src.heuristics import (Params, eval_solution,        # noqa: E402
+                            solve_alns)
+from src.heuristics.validator import (check_solution,     # noqa: E402
+                                      cost_params_from)
+from src.utils import (alns_solution_payload,             # noqa: E402
+                       fleet_stats, write_csv)
 
 
 # ============================================================
@@ -91,13 +95,13 @@ def iter_instances(cfg):
 # 2. Run + aggregation helpers
 # ============================================================
 def run_once(pr, acfg, seed, selector, q_params=None):
-    """One solve_alns run; returns (obj, runtime_s, stats)."""
+    """One solve_alns run; returns (obj, runtime_s, stats, best_sol)."""
     t0 = time.time()
-    _, cost, stats = solve_alns(
+    best, cost, stats = solve_alns(
         pr, iters=acfg.get("iters", 3000), seed=seed,
         time_limit_s=acfg.get("time_limit_s"),
         selector=selector, q_params=q_params)
-    return cost, time.time() - t0, stats
+    return cost, time.time() - t0, stats, best
 
 
 def aggregate(rows):
@@ -125,7 +129,10 @@ def run_compare(cfg, root, insts):
     selectors = cfg.get("selectors", ["roulette", "qlearning"])
     sel_params = cfg.get("selector_params", {})
     qdir = os.path.join(root, "qtab")
-    os.makedirs(qdir, exist_ok=True)
+    sdir = os.path.join(root, "solutions")
+    tdir = os.path.join(root, "traces")
+    for d in (qdir, sdir, tdir):
+        os.makedirs(d, exist_ok=True)
 
     raw, summary = [], []
     for name, pr in insts:
@@ -133,22 +140,79 @@ def run_compare(cfg, root, insts):
         for sel in selectors:
             rows, best_run = [], None
             for s in seeds:
-                obj, rt, stats = run_once(pr, acfg, s, sel,
-                                          sel_params.get(sel))
+                obj, rt, stats, sol = run_once(pr, acfg, s, sel,
+                                               sel_params.get(sel))
                 print(f"  [{name}] {sel} seed={s} obj={obj:.4f} "
                       f"{rt:.0f}s", flush=True)
+
+                # re-check with the ALNS evaluator + the independent
+                # validator (recomputes everything from primitives)
+                ev_obj, feas, brk, _ = eval_solution(pr, sol)
+                ok_ind, viols, ind_obj = check_solution(
+                    pr.inst, pr.e_c, pr.l_c, sol, cost_params_from(pr))
+                ind_diff = ind_obj - ev_obj
+                if viols or abs(ind_diff) > 1e-4:
+                    print(f"  !! VALIDATOR [{name}] {sel} seed={s} "
+                          f"diff={ind_diff:+.6f} "
+                          f"violations={viols}", flush=True)
+
+                # persist best solution + convergence trace
+                with open(os.path.join(
+                        sdir, f"sol_{name}_{sel}_{s}.json"), "w") as f:
+                    json.dump({
+                        "instance": name, "selector": sel, "seed": s,
+                        "obj": round(obj, 6),
+                        "init_obj": round(stats["init_cost"], 6),
+                        "instance_set": cfg.get("instance_set"),
+                        "routes": {str(k): v
+                                   for k, v in sol.routes.items()},
+                        "plot_payload": alns_solution_payload(
+                            pr, sol, f"{sel}_{name}", obj),
+                    }, f, ensure_ascii=False, indent=2)
+                write_csv(os.path.join(
+                    tdir, f"trace_{name}_{sel}_{s}.csv"),
+                    [{"iter": i, "elapsed_s": e, "best_cost": c}
+                     for i, e, c in stats["best_trace"]],
+                    ["iter", "elapsed_s", "best_cost"])
+
+                ntr, nrb, rc = fleet_stats(sol)
                 row = {"instance": name, "n_cust": len(pr.C),
                        "selector": sel, "seed": s,
                        "obj": round(obj, 4), "runtime_s": round(rt, 1),
                        "iters_done": stats["iters_done"],
-                       "improve_pct": round(stats["improve_pct"], 1)}
+                       "improve_pct": round(stats["improve_pct"], 1),
+                       "init_obj": round(stats["init_cost"], 4),
+                       "feasible": feas,
+                       "indep_feasible": ok_ind,
+                       "indep_obj_diff": round(ind_diff, 6),
+                       "trucks": ntr, "robots": nrb, "robot_cust": rc,
+                       "truck_fixed": round(brk["truck_fixed"], 4),
+                       "robot_fixed": round(brk["robot_fixed"], 4),
+                       "truck_travel": round(brk["truck_travel"], 4),
+                       "robot_travel": round(brk["robot_travel"], 4),
+                       "lateness": round(brk["lateness"], 4),
+                       "best_first_hit_iter":
+                           stats["best_first_hit_iter"],
+                       "selector_overhead_s":
+                           stats["selector_overhead_s"],
+                       "action_hist": json.dumps(stats["action_hist"])}
                 rows.append(row)
                 if best_run is None or obj < best_run[0]:
                     best_run = (obj, stats)
             raw.extend(rows)
             by_sel[sel] = aggregate(rows)
-            summary.append({"instance": name, "n_cust": len(pr.C),
-                            "selector": sel, **by_sel[sel]})
+            summary.append({
+                "instance": name, "n_cust": len(pr.C),
+                "selector": sel, **by_sel[sel],
+                "mean_init_obj": round(statistics.mean(
+                    r["init_obj"] for r in rows), 4),
+                "n_feasible": sum(1 for r in rows if r["feasible"]),
+                "n_indep_feasible": sum(1 for r in rows
+                                        if r["indep_feasible"]),
+                "mean_best_first_hit_iter": round(statistics.mean(
+                    r["best_first_hit_iter"] for r in rows), 1),
+                "mean_selector_overhead_s": round(statistics.mean(
+                    r["selector_overhead_s"] for r in rows), 3)})
             if sel == "qlearning":
                 with open(os.path.join(qdir, f"qtab_{name}.json"),
                           "w") as f:
@@ -164,11 +228,18 @@ def run_compare(cfg, root, insts):
 
     write_csv(os.path.join(root, "runs_compare.csv"), raw,
               ["instance", "n_cust", "selector", "seed", "obj",
-               "runtime_s", "iters_done", "improve_pct"])
+               "runtime_s", "iters_done", "improve_pct", "init_obj",
+               "feasible", "indep_feasible", "indep_obj_diff",
+               "trucks", "robots", "robot_cust", "truck_fixed",
+               "robot_fixed", "truck_travel", "robot_travel",
+               "lateness", "best_first_hit_iter",
+               "selector_overhead_s", "action_hist"])
     write_csv(os.path.join(root, "summary_compare.csv"), summary,
               ["instance", "n_cust", "selector", "n_runs", "mean_obj",
                "std_obj", "min_obj", "mean_runtime_s",
-               "mean_improve_pct"])
+               "mean_improve_pct", "mean_init_obj", "n_feasible",
+               "n_indep_feasible", "mean_best_first_hit_iter",
+               "mean_selector_overhead_s"])
 
 
 # ============================================================
@@ -186,7 +257,7 @@ def run_search(cfg, root, insts):
             for gamma in gammas:
                 rows = []
                 for s in seeds:
-                    obj, rt, stats = run_once(
+                    obj, rt, stats, _ = run_once(
                         pr, acfg, s, "qlearning",
                         q_params={"eta": eta, "gamma": gamma})
                     rows.append({"instance": name, "n_cust": len(pr.C),
