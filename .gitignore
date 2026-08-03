@@ -3,6 +3,7 @@ results/*
 !results/.gitkeep
 *.csv
 *.json
+*.pt
 
 # python
 __pycache__/
