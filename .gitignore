@@ -3,16 +3,20 @@ results/*
 !results/.gitkeep
 *.csv
 *.json
-*.pt
+!experiments/configs/*.json
 *.svg
 CHANGELOG.md
 MILP_VERIFICATION.md
+
+# trained model checkpoints / training logs (models/)
+*.pt
 
 # python
 __pycache__/
 *.pyc
 *.egg-info/
-.venv/*
+.venv/
+.pytest_cache/
 
 # solver
 gurobi.log
