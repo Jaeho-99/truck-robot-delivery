@@ -6,16 +6,23 @@ pedestrian) congestion. Trucks carry autonomous delivery robots,
 deploy them at parking nodes, and retrieve them at possibly different
 parking nodes later on the route.
 
-Two solution methods are provided over the same objective and
-feasibility definition:
+All methods share one objective and feasibility definition:
 
 * **Exact** — a MILP of the full formulation (constraints (1)-(70)),
   solved with Gurobi ([`src/model.py`](src/model.py)).
 * **ALNS** — adaptive large neighborhood search (Ropke & Pisinger
   2006 skeleton: random/worst/related destroy, greedy/greedy-noise/
-  regret-2 repair, roulette-wheel adaptive weights, simulated-annealing
-  acceptance) with a congestion-aware initial solution
-  ([`src/heuristics/`](src/heuristics/)).
+  regret-2 repair, simulated-annealing acceptance) with a
+  congestion-aware initial solution
+  ([`src/heuristics/`](src/heuristics/)). Operator selection is
+  pluggable (`solve_alns(selector=...)`):
+  * `roulette` — classic roulette-wheel adaptive weights (vanilla),
+  * `qlearning` — **QL-ALNS**, online tabular Q-learning over
+    (destroy, repair) pairs
+    ([`src/heuristics/qlearning.py`](src/heuristics/qlearning.py)),
+  * `gnn_dqn` — **GNN-DQN-ALNS**, a GATv2 encoder over the current
+    solution graph plus a Dueling Double-DQN head, trained offline
+    ([`src/gnn_dqn/`](src/gnn_dqn/)).
 
 ## Repository structure
 
@@ -25,36 +32,61 @@ source code, data, scripts, and results:
 
 ```
 ├── src/                      # algorithm code only (no experiment I/O)
-│   ├── model.py              # MILP formulation (exact method)
+│   ├── model.py              # MILP formulation (+ fix_binaries
+│   │                         #   verification mode)
 │   ├── heuristics/           # metaheuristics
 │   │   ├── alns.py           # Params, initial solutions, ALNS driver
+│   │   │                     #   (selector plug-in, instrumentation)
 │   │   ├── operators.py      # destroy/repair operators
-│   │   └── solution.py       # solution representation and evaluator
+│   │   ├── solution.py       # solution representation and evaluator
+│   │   ├── qlearning.py      # tabular Q-learning selector (QL-ALNS)
+│   │   └── validator.py      # independent feasibility/objective
+│   │                         #   validator (no evaluator reuse)
+│   ├── gnn_dqn/              # GNN-DQN operator selection
+│   │   ├── config.py         # all hyperparameters (dataclass)
+│   │   ├── graph_builder.py  # Solution -> HeteroData graph
+│   │   ├── global_features.py# 7-dim global state g_t
+│   │   ├── encoder.py        # GATv2 encoder + Dueling DQN head
+│   │   ├── dqn_agent.py      # replay buffer, Double-DQN updates
+│   │   ├── reward.py         # R1 / R2 / binary reward modes
+│   │   ├── provider.py       # train/test instance providers
+│   │   ├── trainer.py        # offline training loop
+│   │   ├── normalization.py  # feature normalization constants
+│   │   └── selector_gnn.py   # frozen-model inference adapter
 │   ├── instance.py           # instance schema and generators
 │   ├── plotting.py           # instance/route SVG figures
 │   └── utils.py              # reports, diagnostics, CSV, payloads
 ├── data/
-│   ├── generator.py          # instance generation script
-│   └── instances/            # exported toy instance payloads
+│   └── generator.py          # instance generation script
 ├── experiments/
-│   ├── run_experiment.py     # unified config-driven experiment runner
-│   └── configs/
-│       ├── toy_small.json    # small grids: exact vs ALNS, 5 seeds
-│       └── toy_scaling.json  # nested scaling (n = 5..100)
+│   ├── run_experiment.py     # exact vs ALNS runner (config-driven)
+│   ├── run_qlearning.py      # selector comparison runner (saves
+│   │                         #   solutions, traces, validator checks)
+│   ├── train_gnn_dqn.py      # GNN-DQN offline training CLI
+│   ├── verify_solution_milp.py # MILP fixing check of saved solutions
+│   ├── make_route_svgs.py    # route SVGs from saved solutions
+│   └── configs/              # experiment configs (JSON)
+│       ├── main_alns.json / main_ql.json / main_gnn.json
+│       └── toy_small.json / toy_scaling.json
+├── tests/                    # pytest: gnn_dqn + validator suites
+├── models/                   # trained checkpoints (gitignored)
 └── results/                  # experiment outputs (gitignored)
 ```
 
 Algorithm code (`src/`) contains no experiment settings or file paths;
 experiments are described entirely by JSON configs under
-`experiments/configs/` and executed by the single runner
-`experiments/run_experiment.py`. Exact decomposition methods (e.g.
-branch-and-price, Benders) would live in a future `src/exact/`
-subpackage.
+`experiments/configs/`.
 
 ## Installation
 
-Python >= 3.9 with [Gurobi](https://www.gurobi.com) (tested with
-Gurobi 12.0; a free academic license is available):
+Python >= 3.9. Two dependency groups:
+
+* **Exact / plotting**: [Gurobi](https://www.gurobi.com) (tested with
+  Gurobi 12.0; free academic license), numpy, matplotlib.
+* **GNN-DQN**: torch + torch_geometric (pinned in
+  `requirements.txt`); CPU is sufficient. The heuristics themselves
+  are pure standard library — ALNS and QL-ALNS run without any of the
+  above.
 
 ```bash
 pip install -r requirements.txt
@@ -62,34 +94,51 @@ pip install -r requirements.txt
 
 ## Usage
 
-Run an experiment from the repository root by pointing the runner at a
-config:
+Selector comparison (vanilla ALNS / QL-ALNS / GNN-DQN-ALNS) on the
+nested scaling instances (n = 5..100, master seed 1):
 
 ```bash
-# small grids (4 and 6 customers), exact vs ALNS, seeds 1-5
-python experiments/run_experiment.py \
-    --config experiments/configs/toy_small.json
-
-# customer-count scaling on nested instances (exact up to n = 20,
-# ALNS up to n = 100). Note: exact time limits are up to 3 h / 3 days.
-python experiments/run_experiment.py \
-    --config experiments/configs/toy_scaling.json
+python experiments/run_qlearning.py \
+    --config experiments/configs/main_alns.json   # or main_ql / main_gnn
 ```
 
-Outputs go to `results/<experiment>/`: per-instance JSON payloads,
-Gurobi logs, text reports with cost breakdown, routes and custody
-diagnostics, route figures (SVG), and `summary_exact.csv` /
-`summary_alns.csv` / `summary_compare.csv`.
+Each run writes to `results/<experiment>/`: `runs_compare.csv` /
+`summary_compare.csv` (objective, runtime, cost breakdown, feasibility
+re-checks, selector instrumentation), `solutions/sol_*.json` (best
+solution of every run), and `traces/trace_*.csv` (convergence).
 
-A new comparison (e.g. a case study) only needs a new config file —
-choose the instance set, the methods to run, and the solver
-parameters; see the schema documented at the top of
-[`run_experiment.py`](experiments/run_experiment.py).
-
-To (re-)export the toy instance payloads:
+Train the GNN-DQN selector (masters seeds 2-4; the test instances of
+master seed 1 are never sampled):
 
 ```bash
-python data/generator.py
+python experiments/train_gnn_dqn.py \
+    --episodes 3000 --episode-len 500 --train-freq 4 \
+    --trucks 4 --robots 2 --out models/gnn_dqn_final.pt
+```
+
+Exact vs ALNS comparison (Gurobi required):
+
+```bash
+python experiments/run_experiment.py \
+    --config experiments/configs/toy_small.json
+```
+
+Post-processing of saved solutions:
+
+```bash
+# route figures (SVG) for every saved solution of an experiment
+python experiments/make_route_svgs.py --results-dir results/main_ql
+
+# gold-standard check: fix the MILP's routing binaries to a saved
+# solution and confirm the objective matches (requires Gurobi)
+python experiments/verify_solution_milp.py \
+    --solution results/main_ql/solutions/sol_n15_s1_qlearning_0.json
+```
+
+Tests:
+
+```bash
+python -m pytest tests/ -q
 ```
 
 ## Reproducibility
@@ -100,19 +149,22 @@ All randomness is seeded:
   (`src/instance.py`); the scaling instances use a fixed master pool of
   100 customers sliced to the first n, so instances are nested across
   sizes.
-* ALNS is fully deterministic given `alns.seed` in the config.
+* ALNS is fully deterministic given the run seed, for every selector
+  (the learned selectors use dedicated rng streams / frozen models).
 * The exact method reports the proven optimality gap; optimal
   objective values are reproducible, while runtimes and time-limited
   incumbents may vary across machines.
 
-Each comparison run can additionally re-evaluate the exact solution
-with the ALNS evaluator (`check_evaluator_consistency`); the reported
-`recon_diff` must be ~0, certifying that both methods share one
-objective and feasibility definition.
+Solution correctness is certified on three independent levels: the
+ALNS evaluator, a from-primitives validator
+(`src/heuristics/validator.py`, run automatically on every saved
+solution), and the MILP fixing check
+(`experiments/verify_solution_milp.py`).
 
 ## Notes
 
-* `results/` is gitignored; the directory structure is kept via
-  `.gitkeep`.
+* `results/` and `models/*.pt` are gitignored; the directory structure
+  is kept via `.gitkeep`. Trained checkpoints must be copied between
+  machines (or retrained) separately.
 * A real-data case study will be added later as an additional config
   plus an instance parser in `src/instance.py`.
