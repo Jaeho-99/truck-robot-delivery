@@ -7,6 +7,7 @@ results/*
 *.svg
 CHANGELOG.md
 MILP_VERIFICATION.md
+CLAUDE.md
 
 # trained model checkpoints / training logs (models/)
 *.pt
