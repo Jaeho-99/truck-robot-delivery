@@ -4,6 +4,9 @@ results/*
 *.csv
 *.json
 *.pt
+*.svg
+CHANGELOG.md
+MILP_VERIFICATION.md
 
 # python
 __pycache__/
