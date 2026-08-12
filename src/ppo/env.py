@@ -15,7 +15,10 @@ The remaining five solution features are reused via global_features.
 import math
 import random
 
+import torch
+
 from ..gnn_dqn.global_features import global_features
+from ..gnn_dqn.graph_builder import EDGE_DIMS, EDGE_TYPES
 from ..heuristics.alns import NOISE_FRAC, congestion_aware_initial
 from ..heuristics.operators import (DESTROY, repair_greedy,
                                     repair_regret2)
@@ -36,6 +39,23 @@ def sa_accept(f_new, f_cur, T, rng):
     return (f_new < f_cur - 1e-9
             or rng.random() < math.exp(-(f_new - f_cur)
                                        / max(T, 1e-9)))
+
+
+def pad_edge_types(data):
+    """Give every EDGE_TYPES triplet a (possibly empty) store.
+
+    Batch.from_data_list mis-collates HeteroData lists whose edge-store
+    key sets differ: edges of a graph missing elsewhere get node
+    offsets from the wrong graph, silently rewiring them across graph
+    boundaries. That makes batched (update) outputs diverge from
+    single-graph (rollout) outputs and corrupts the PPO ratio. Padding
+    to one shared key set makes collation exact.
+    """
+    for et in EDGE_TYPES:
+        if et not in data.edge_types:
+            data[et].edge_index = torch.zeros((2, 0), dtype=torch.long)
+            data[et].edge_attr = torch.zeros((0, EDGE_DIMS[et[1]]))
+    return data
 
 
 def ppo_global_features(pr, sol, t, since_improve, f_cur, f_best,
@@ -90,7 +110,7 @@ class ALNSEnv:
         data.g = ppo_global_features(self.pr, self.sol, self.t,
                                      self.since_improve, self.f_cur,
                                      self.f_best, self.cfg.max_iter)
-        return data
+        return pad_edge_types(data)
 
     def step(self, a):
         di, ri = divmod(int(a), 3)

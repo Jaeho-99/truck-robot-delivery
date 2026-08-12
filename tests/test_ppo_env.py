@@ -20,6 +20,7 @@ from src.gnn_dqn.graph_builder import GraphBuilder          # noqa: E402
 from src.gnn_dqn.normalization import compute_norms         # noqa: E402
 from src.heuristics import Params                           # noqa: E402
 from src.ppo.config import PPOConfig                        # noqa: E402
+from src.gnn_dqn.graph_builder import EDGE_TYPES            # noqa: E402
 from src.ppo.env import (ALNSEnv, VecALNS, W_START,         # noqa: E402
                          sa_accept)
 
@@ -139,6 +140,20 @@ def test_g_progress_and_stagnation(pr, builder, cfg):
             min(env.since_improve / 200.0, 5.0))
     env.since_improve = 1500            # cap at 5.0, not 1.0 (spec)
     assert env._obs().g[0, 5].item() == 5.0
+
+
+# ---- obs padding: uniform edge-type key set across all obs ----
+def test_obs_edge_types_padded(pr, builder, cfg):
+    """Graphs with differing edge-store key sets are silently
+    mis-collated by Batch.from_data_list (edges rewired across graph
+    boundaries), which breaks rollout-vs-update ratio consistency —
+    every obs must carry the full EDGE_TYPES key set."""
+    env = _env(pr, builder, cfg, seed=3, max_iter=40)
+    obs = env.reset()
+    rng = random.Random(11)
+    for _ in range(40):
+        assert set(obs.edge_types) == set(EDGE_TYPES)
+        obs, _, _, _ = env.step(rng.randrange(9))
 
 
 # ---- vectorized wrapper: auto-reset, done flags ----
