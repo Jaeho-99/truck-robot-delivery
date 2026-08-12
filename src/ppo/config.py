@@ -31,6 +31,8 @@ class PPOConfig:
     n_envs: int = 16
     t_rollout: int = 512
     max_iter: int = 500             # ALNS horizon (progress + cooling)
+    # training
+    n_updates: int = 500
     # misc
     device: str = "cpu"
     seed: int = 0
