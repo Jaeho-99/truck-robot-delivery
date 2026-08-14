@@ -1,5 +1,5 @@
 {
-  "experiment": "main_gnn_500",
+  "experiment": "main_ql_500",
   "instance_set": {
     "type": "scaling", "seed": 1,
     "sizes": [5, 10, 15, 20, 25, 50, 100],
@@ -9,8 +9,5 @@
   "alns": {"iters": 500, "time_limit_s": null},
   "run_seeds": [0, 1, 2],
   "compare": true,
-  "selectors": ["gnn_dqn"],
-  "selector_params": {
-    "gnn_dqn": {"model_path": "models/gnn_dqn_dueling.pt"}
-  }
+  "selectors": ["qlearning"]
 }

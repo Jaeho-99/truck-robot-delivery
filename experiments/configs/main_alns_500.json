@@ -7,7 +7,7 @@
     "num_parking_copies": 2, "beta_robot": 3
   },
   "alns": {"iters": 500, "time_limit_s": null},
-  "run_seeds": [0],
+  "run_seeds": [0, 1, 2],
   "compare": true,
   "selectors": ["roulette"]
 }
