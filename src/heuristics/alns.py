@@ -37,6 +37,17 @@ INIT_SCORE_MIN = 1e-9
 # restarts.
 NOISE_FRAC = 0.25
 
+# SA start-temperature fraction (DR-ALNS / Roozbeh rule of thumb): a
+# solution 5% worse than the initial one is accepted with probability
+# 0.5 at T_start = W_START * f_init / ln 2. Shared by solve_alns, the
+# DQN trainer and the PPO environment.
+W_START = 0.05
+
+# Degree of destruction (DR-ALNS vanilla): a FIXED 30% of customers is
+# removed each iteration, q = max(1, round(DOD * n)). Shared by all
+# training/inference paths.
+DOD = 0.3
+
 
 # ============================================================
 # 1. Parameter container
@@ -304,7 +315,7 @@ def roulette(weights, rng):
 
 
 def solve_alns(pr, iters=3000, seed=0, segment=None,
-               sigma=(33.0, 9.0, 13.0), reaction=0.1, w_start=0.25,
+               sigma=(5.0, 3.0, 1.0), reaction=0.2, w_start=W_START,
                time_limit_s=None, initial=None, selector="roulette",
                q_params=None):
     """Run ALNS and return (best_solution, best_cost, stats).
@@ -328,7 +339,8 @@ def solve_alns(pr, iters=3000, seed=0, segment=None,
     rng = random.Random(seed)
     segment = segment or max(20, iters // 30)
     nC = len(pr.C)
-    qmin, qmax = 1, max(2, round(0.35 * nC))
+    # degree of destruction: fixed 30% of customers (DR-ALNS vanilla)
+    q_destroy = max(1, round(DOD * nC))
 
     if initial is None:
         initial = congestion_aware_initial
@@ -350,9 +362,10 @@ def solve_alns(pr, iters=3000, seed=0, segment=None,
     ]
 
     # SA start temperature: a solution worse than the initial one by
-    # w_start (fraction) is accepted with probability 0.5.
-    T = (w_start * init_cost) / math.log(2)
-    cooling = (1e-3) ** (1.0 / max(1, iters))   # 0.1% of T at the end
+    # w_start (fraction) is accepted with probability 0.5. Linear
+    # decay to 0 over the run (Santini et al.; same rule in the DQN
+    # trainer and the PPO environment).
+    T0 = (w_start * init_cost) / math.log(2)
 
     dW = [1.0] * len(DESTROY)
     rW = [1.0] * len(repair_ops)
@@ -386,20 +399,25 @@ def solve_alns(pr, iters=3000, seed=0, segment=None,
         from ..gnn_dqn.selector_gnn import GNNSelector
         gsel = GNNSelector(**(q_params or {}))
         best_it = 0
+        # previous-iteration outcome flags for g_t (DR-ALNS obs):
+        # (best_improved, current_accepted, current_improved)
+        g_flags = (False, False, False)
 
     it_done = 0
     for it in range(1, iters + 1):
         if time_limit_s is not None and time.time() - t_start > time_limit_s:
             break
         it_done = it
+        # linear temperature decay T0 -> 0 over the run
+        T = T0 * (1.0 - (it - 1) / iters)
         t_sel = time.perf_counter()
         if use_q:
             act = qtab.select(state, it)
             di, ri = divmod(act, len(repair_ops))
         elif use_gnn:
-            di, ri = gsel.select(pr, current_solution, it / iters,
+            di, ri = gsel.select(pr, current_solution, it - 1, iters,
                                  it - 1 - best_it, current_cost,
-                                 best_cost)
+                                 best_cost, *g_flags)
         else:
             di = roulette(dW, rng)
             ri = roulette(rW, rng)
@@ -407,10 +425,7 @@ def solve_alns(pr, iters=3000, seed=0, segment=None,
         a_idx = di * len(repair_ops) + ri
         t_op = time.perf_counter()      # clone+destroy+repair+eval
         cand = current_solution.clone()
-        # q = "degree of destruction" (DR-ALNS): number of customers
-        # removed this iteration, drawn uniformly from [qmin, qmax]
-        q = rng.randint(qmin, qmax)
-        pool = DESTROY[di][1](pr, cand, q, rng)
+        pool = DESTROY[di][1](pr, cand, q_destroy, rng)
         repair_ops[ri][1](pr, cand, pool, rng)
         cand_cost, ok, _, _ = eval_solution(pr, cand)
         pair_cnt[a_idx] += 1
@@ -424,15 +439,20 @@ def solve_alns(pr, iters=3000, seed=0, segment=None,
                 t_sel = time.perf_counter()
                 qtab.update(state, act, 0.0, state)
                 sel_time += time.perf_counter() - t_sel
-            T *= cooling
+            if use_gnn:
+                g_flags = (False, False, False)
             continue
 
-        # Scores: sigma1 new best / sigma2 improving new /
-        # sigma3 accepted new.
+        # Operator scores (DR-ALNS weights w1..w4 = 5, 3, 1, 0):
+        # 5 new best / 3 improving the current solution / 1 accepted /
+        # 0 otherwise (improving/accepted only for unseen solutions).
         key = round(cand_cost, 4)
         reward = 0.0
         accept = False
+        found_best = False
+        was_improving = cand_cost < current_cost - 1e-9
         if cand_cost < best_cost - 1e-9:
+            found_best = True
             best_solution, best_cost = cand.clone(), cand_cost
             if use_gnn:
                 best_it = it
@@ -455,6 +475,8 @@ def solve_alns(pr, iters=3000, seed=0, segment=None,
         if accept:
             accept_cnt += 1
             current_solution, current_cost = cand, cand_cost
+        if use_gnn:
+            g_flags = (found_best, accept, accept and was_improving)
         if use_q:
             t_sel = time.perf_counter()
             s_next = get_state(pr, current_solution) if accept else state
@@ -478,7 +500,6 @@ def solve_alns(pr, iters=3000, seed=0, segment=None,
                              + reaction * (rScore[i] / rCnt[i]))
                 rScore[i] = 0.0
                 rCnt[i] = 0
-        T *= cooling
 
     stats = {"init_cost": init_cost, "best_cost": best_cost,
              "iters_done": it_done, "selector": selector,

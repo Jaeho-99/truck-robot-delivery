@@ -80,7 +80,9 @@ def ppo_update(model, optimizer, buffer, cfg, progress, generator=None):
             entropies.append(ent.item())
         epochs_run += 1
         approx_kl = sum(kls) / len(kls)
-        if approx_kl > 1.5 * cfg.target_kl:
+        # SB3/DR-ALNS default target_kl=None disables the early stop
+        if (cfg.target_kl is not None
+                and approx_kl > 1.5 * cfg.target_kl):
             break
 
     # explained variance of the rollout-time value estimates

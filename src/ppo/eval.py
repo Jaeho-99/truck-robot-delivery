@@ -36,7 +36,12 @@ def load_model(path, device="cpu"):
                        if k in known})
     cfg.device = device
     model = ActorCritic(cfg).to(device)
-    model.load_state_dict(ckpt["model"])
+    try:
+        model.load_state_dict(ckpt["model"])
+    except RuntimeError as e:
+        raise RuntimeError(
+            "checkpoint incompatible with the current model "
+            "(g_t changed to 9 dims — retraining required)") from e
     model.eval()
     return model, cfg, ckpt["norms"]
 
@@ -56,7 +61,7 @@ def evaluate_instance(model, cfg, builder, pr, seed=0):
     t0 = time.time()
     best_trace = [(0, 0.0, round(best_cost, 6))]
 
-    for _ in range(cfg.max_iter):
+    for _ in range(cfg.search_iterations):
         with torch.no_grad():
             logits = model.actor(model._state(
                 Batch.from_data_list([obs]).to(device)))

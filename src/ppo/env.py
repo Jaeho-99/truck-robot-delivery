@@ -1,15 +1,12 @@
-"""ALNS as a step-interface environment for PPO rollouts (spec: env).
+"""ALNS as a step-interface environment for PPO rollouts.
 
-Mirrors the per-iteration body of solve_alns exactly — destroy ->
-repair -> SA accept with geometric cooling over cfg.max_iter — so the
-acceptance criterion is identical in training and evaluation by
-construction (solve_alns itself stays untouched). The DQN trainer's
-linear temperature decay is deliberately NOT reproduced.
-
-g_t redefines two features relative to the DQN (spec):
-  progress   = t / max_iter          (deployment horizon)
-  stagnation = min(iters_since_improve / 200, 5.0)
-The remaining five solution features are reused via global_features.
+DR-ALNS-aligned: episodes of cfg.search_iterations (100, fixed),
+linear SA temperature decay from T0 = W_START * f_init / ln 2 to 0,
+fixed degree of destruction q = round(DOD * n) — identical to
+solve_alns and the DQN trainer (shared constants from
+src.heuristics.alns). g_t comes from the shared
+gnn_dqn.global_features (single source for both RL paths). reward is
+the DR-ALNS reward function: +5 on a new best-known solution, else 0.
 """
 
 import math
@@ -19,15 +16,11 @@ import torch
 
 from ..gnn_dqn.global_features import global_features
 from ..gnn_dqn.graph_builder import EDGE_DIMS, EDGE_TYPES
-from ..heuristics.alns import NOISE_FRAC, congestion_aware_initial
+from ..heuristics.alns import (DOD, NOISE_FRAC, W_START,
+                               congestion_aware_initial)
 from ..heuristics.operators import (DESTROY, repair_greedy,
                                     repair_regret2)
 from ..heuristics.solution import eval_solution
-
-W_START = 0.25          # SA start temperature fraction (as solve_alns)
-
-STAGNATION_SCALE = 200.0
-STAGNATION_CAP = 5.0
 
 
 def sa_accept(f_new, f_cur, T, rng):
@@ -58,26 +51,13 @@ def pad_edge_types(data):
     return data
 
 
-def ppo_global_features(pr, sol, t, since_improve, f_cur, f_best,
-                        max_iter):
-    """g_t with the spec's progress/stagnation definitions.
-
-    Reuses global_features for the five solution features (indices
-    0-3, 6) and overwrites only the stagnation entry (index 5); the
-    progress entry (index 4) is already just a [0,1] clip of t/max_iter.
-    """
-    g = global_features(pr, sol, t / max_iter, 0, f_cur, f_best)
-    g[0, 5] = min(since_improve / STAGNATION_SCALE, STAGNATION_CAP)
-    return g
-
-
 class ALNSEnv:
     """Single-instance ALNS with a gym-style step interface.
 
     reset() -> obs; step(a) -> (obs, reward, done, info). obs is a
     HeteroData with g_t attached as .g. done=True only at
-    t == cfg.max_iter; rollout-boundary truncation is the caller's
-    concern (spec). reward = max(0, f_best_prev - f_best) / f_init.
+    t == cfg.search_iterations; rollout-boundary truncation is the
+    caller's concern.
     """
 
     def __init__(self, provider, builder, cfg, seed):
@@ -92,59 +72,72 @@ class ALNSEnv:
         f, _, _, _ = eval_solution(self.pr, self.sol)
         self.f_init = self.f_cur = self.f_best = f
         self.t = 0
-        self.since_improve = 0
+        self.stagcount = 0
+        # previous-iteration outcome flags (DR-ALNS obs); reset -> 0
+        self.flags = (False, False, False)
         nC = len(self.pr.C)
-        self.qmin, self.qmax = 1, max(2, round(0.35 * nC))
+        # degree of destruction: fixed 30% of customers (DR-ALNS)
+        self.q_destroy = max(1, round(DOD * nC))
         noise_amp = NOISE_FRAC * self.f_init
         self.repairs = [
             lambda p, s, pool, r: repair_greedy(p, s, pool, r, 0.0),
             lambda p, s, pool, r: repair_greedy(p, s, pool, r,
                                                 noise_amp),
             repair_regret2]
-        self.T = (W_START * self.f_init) / math.log(2)
-        self.cooling = (1e-3) ** (1.0 / max(1, self.cfg.max_iter))
+        self.T0 = (W_START * self.f_init) / math.log(2)
         return self._obs()
+
+    def _temperature(self):
+        """Linear decay T0 -> 0 over the episode (as solve_alns)."""
+        return self.T0 * (1.0 - self.t / self.cfg.search_iterations)
 
     def _obs(self):
         data = self.builder.build(self.pr, self.sol)
-        data.g = ppo_global_features(self.pr, self.sol, self.t,
-                                     self.since_improve, self.f_cur,
-                                     self.f_best, self.cfg.max_iter)
+        best_improved, accepted, cur_improved = self.flags
+        data.g = global_features(
+            self.pr, self.sol, self.t, self.cfg.search_iterations,
+            self.stagcount, self.f_cur, self.f_best,
+            best_improved=best_improved, current_accepted=accepted,
+            current_improved=cur_improved)
         return pad_edge_types(data)
 
     def step(self, a):
         di, ri = divmod(int(a), 3)
         cand = self.sol.clone()
-        pool = DESTROY[di][1](self.pr, cand,
-                              self.rng.randint(self.qmin, self.qmax),
-                              self.rng)
+        pool = DESTROY[di][1](self.pr, cand, self.q_destroy, self.rng)
         self.repairs[ri](self.pr, cand, pool, self.rng)
         f_new, ok, _, _ = eval_solution(self.pr, cand)
 
-        f_best_prev = self.f_best
-        improved = False
+        T = self._temperature()
+        improved_best = False
+        accepted = False
+        improved_current = False
         if ok:      # infeasible candidates are discarded (solve_alns)
             if f_new < self.f_best - 1e-9:
                 self.f_best = f_new
-                improved = True
-            if sa_accept(f_new, self.f_cur, self.T, self.rng):
+                improved_best = True
+            if sa_accept(f_new, self.f_cur, T, self.rng):
+                accepted = True
+                improved_current = f_new < self.f_cur - 1e-9
                 self.sol, self.f_cur = cand, f_new
-        reward = max(0.0, f_best_prev - self.f_best) / self.f_init
+        # DR-ALNS reward: +5 on a new best-known solution, else 0
+        reward = 5.0 if improved_best else 0.0
 
-        self.since_improve = 0 if improved else self.since_improve + 1
-        self.T *= self.cooling      # cools on infeasible too
+        self.flags = (improved_best, accepted, improved_current)
+        self.stagcount = 0 if improved_best else self.stagcount + 1
         self.t += 1
-        done = self.t >= self.cfg.max_iter
+        done = self.t >= self.cfg.search_iterations
         return (self._obs(), reward, done,
-                {"f_best": self.f_best, "f_cur": self.f_cur})
+                {"f_best": self.f_best, "f_cur": self.f_cur,
+                 "f_init": self.f_init,
+                 "instance_id": self.pr.inst.get("instance_id")})
 
 
 class VecALNS:
     """Synchronous vector of ALNSEnv with auto-reset on done.
 
     A done env's returned obs is the reset obs of its next episode, so
-    GAE must key off done=True (never bootstrap through it) — matching
-    the spec's truncation-vs-termination rules.
+    GAE must key off done=True (never bootstrap through it).
     """
 
     def __init__(self, envs):

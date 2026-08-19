@@ -1,4 +1,4 @@
-"""Phase 2 tests for the PPO ALNS environment (spec: env/rollout).
+"""Tests for the PPO ALNS environment (DR-ALNS-aligned).
 
 Run with:  .venv/bin/python -m pytest tests/test_ppo_env.py -q
 """
@@ -19,9 +19,8 @@ from src import instance                                    # noqa: E402
 from src.gnn_dqn.graph_builder import GraphBuilder          # noqa: E402
 from src.gnn_dqn.normalization import compute_norms         # noqa: E402
 from src.heuristics import Params                           # noqa: E402
-from src.ppo.config import PPOConfig                        # noqa: E402
 from src.gnn_dqn.graph_builder import EDGE_TYPES            # noqa: E402
-from src.ppo.env import (ALNSEnv, VecALNS, W_START,         # noqa: E402
+from src.ppo.env import (ALNSEnv, DOD, VecALNS, W_START,    # noqa: E402
                          sa_accept)
 
 
@@ -35,6 +34,7 @@ class FixedProvider:
 
 @pytest.fixture(scope="module")
 def cfg():
+    from src.ppo.config import PPOConfig
     return PPOConfig()
 
 
@@ -58,31 +58,28 @@ def _env(pr, builder, cfg, seed=0, **overrides):
 
 @pytest.fixture(scope="module")
 def trace(pr, builder, cfg):
-    """One full episode (max_iter=500) with random actions."""
+    """One full episode (search_iterations=100) with random actions."""
     env = _env(pr, builder, cfg, seed=0)
     obs = env.reset()
     rng = random.Random(123)
     rows = []
-    for t in range(cfg.max_iter):
+    for t in range(cfg.search_iterations):
         f_best_prev = env.f_best
         obs, r, done, info = env.step(rng.randrange(9))
         rows.append({"t": t, "reward": r, "done": done,
                      "f_best_prev": f_best_prev,
-                     "f_best": info["f_best"], "g": obs.g})
+                     "f_best": info["f_best"], "g": obs.g,
+                     "flags": env.flags})
     return env, rows
 
 
-# ---- reward: best-based, no penalty (spec) ----
-def test_reward_is_best_based(trace):
+# ---- reward: DR-ALNS binary, +5 only on a new best-known ----
+def test_reward_is_binary_new_best(trace):
     env, rows = trace
     for row in rows:
-        expected = max(0.0, row["f_best_prev"] - row["f_best"]) \
-            / env.f_init
-        assert row["reward"] == pytest.approx(expected)
-        assert row["reward"] >= 0.0
-        if row["f_best"] == row["f_best_prev"]:    # incl. worsening
-            assert row["reward"] == 0.0
-    assert any(row["reward"] > 0 for row in rows)  # search did improve
+        improved = row["f_best"] < row["f_best_prev"] - 1e-9
+        assert row["reward"] == (5.0 if improved else 0.0)
+    assert any(row["reward"] == 5.0 for row in rows)  # search improved
 
 
 # ---- smoke: full episode sane ----
@@ -93,23 +90,22 @@ def test_episode_smoke(trace, cfg):
     for row in rows:
         assert torch.isfinite(row["g"]).all()
         assert math.isfinite(row["reward"])
-    # done only at t == max_iter
+    # done only at t == search_iterations
     assert not any(row["done"] for row in rows[:-1])
     assert rows[-1]["done"]
-    assert env.t == cfg.max_iter
+    assert env.t == cfg.search_iterations
 
 
-# ---- acceptance: geometric cooling identical to solve_alns ----
-def test_geometric_cooling_schedule(pr, builder, cfg):
-    env = _env(pr, builder, cfg, seed=1, max_iter=10)
+# ---- SA: 5% start temperature, linear decay to 0 ----
+def test_linear_temperature_schedule(pr, builder, cfg):
+    env = _env(pr, builder, cfg, seed=1, search_iterations=10)
     env.reset()
-    T0 = (W_START * env.f_init) / math.log(2)
-    assert env.T == pytest.approx(T0)
-    cooling = (1e-3) ** (1.0 / 10)
-    assert env.cooling == pytest.approx(cooling)
-    for k in range(1, 11):
-        env.step(0)
-        assert env.T == pytest.approx(T0 * cooling ** k)
+    assert W_START == 0.05
+    T0 = (0.05 * env.f_init) / math.log(2)
+    assert env.T0 == pytest.approx(T0)
+    for k in range(10):
+        env.t = k
+        assert env._temperature() == pytest.approx(T0 * (1 - k / 10))
 
 
 def test_sa_accept_criterion():
@@ -126,20 +122,33 @@ def test_sa_accept_criterion():
     assert sa_accept(101.0, 100.0, 1e18, random.Random(0))
 
 
-# ---- g_t: spec progress/stagnation definitions ----
-def test_g_progress_and_stagnation(pr, builder, cfg):
-    env = _env(pr, builder, cfg, seed=2, max_iter=50)
+# ---- degree of destruction: fixed 30% ----
+def test_degree_of_destruction(pr, builder, cfg):
+    env = _env(pr, builder, cfg, seed=4)
+    env.reset()
+    assert DOD == 0.3
+    assert env.q_destroy == max(1, round(0.3 * len(pr.C)))
+
+
+# ---- g_t: 9 dims, DR-ALNS features tracked by the env ----
+def test_g_shape_and_dynamic_features(pr, builder, cfg):
+    env = _env(pr, builder, cfg, seed=2, search_iterations=50)
     obs = env.reset()
-    assert obs.g.shape == (1, 7)
-    assert obs.g[0, 4].item() == 0.0
+    assert obs.g.shape == (1, 9)
+    assert torch.all(obs.g[0, 2:6] == 0.0)      # first state: zeros
+    assert obs.g[0, 8].item() == 0.0            # search_budget
     rng = random.Random(7)
     for _ in range(20):
         obs, _, _, _ = env.step(rng.randrange(9))
-        assert obs.g[0, 4].item() == pytest.approx(env.t / 50)
-        assert obs.g[0, 5].item() == pytest.approx(
-            min(env.since_improve / 200.0, 5.0))
-    env.since_improve = 1500            # cap at 5.0, not 1.0 (spec)
-    assert env._obs().g[0, 5].item() == 5.0
+        best_improved, accepted, cur_improved = env.flags
+        assert obs.g[0, 2].item() == float(best_improved)
+        assert obs.g[0, 3].item() == float(accepted)
+        assert obs.g[0, 4].item() == float(cur_improved)
+        assert obs.g[0, 5].item() == \
+            (1.0 if abs(env.f_cur - env.f_best) <= 1e-9 else 0.0)
+        assert obs.g[0, 7].item() == pytest.approx(
+            min(1.0, env.stagcount / 50))
+        assert obs.g[0, 8].item() == pytest.approx(env.t / 50)
 
 
 # ---- obs padding: uniform edge-type key set across all obs ----
@@ -148,7 +157,7 @@ def test_obs_edge_types_padded(pr, builder, cfg):
     mis-collated by Batch.from_data_list (edges rewired across graph
     boundaries), which breaks rollout-vs-update ratio consistency —
     every obs must carry the full EDGE_TYPES key set."""
-    env = _env(pr, builder, cfg, seed=3, max_iter=40)
+    env = _env(pr, builder, cfg, seed=3, search_iterations=40)
     obs = env.reset()
     rng = random.Random(11)
     for _ in range(40):
@@ -158,21 +167,22 @@ def test_obs_edge_types_padded(pr, builder, cfg):
 
 # ---- vectorized wrapper: auto-reset, done flags ----
 def test_vec_auto_reset(pr, builder, cfg):
-    vec = VecALNS([_env(pr, builder, cfg, seed=s, max_iter=5)
+    vec = VecALNS([_env(pr, builder, cfg, seed=s, search_iterations=5)
                    for s in (0, 1)])
     vec.reset()
     for t in range(5):
         obs, rewards, dones, infos = vec.step([t % 9, (t + 3) % 9])
         assert dones == [t == 4, t == 4]
     for o in obs:                       # auto-reset obs: fresh episode
-        assert o.g[0, 4].item() == 0.0
+        assert o.g[0, 8].item() == 0.0
+        assert torch.all(o.g[0, 2:6] == 0.0)
 
 
 # ---- determinism: same seed + actions -> same trajectory ----
 def test_determinism(pr, builder, cfg):
     traces = []
     for _ in range(2):
-        env = _env(pr, builder, cfg, seed=42, max_iter=30)
+        env = _env(pr, builder, cfg, seed=42, search_iterations=30)
         env.reset()
         rng = random.Random(9)
         traces.append([env.step(rng.randrange(9))[1:3]

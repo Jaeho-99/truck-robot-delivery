@@ -45,7 +45,7 @@ def graphs(cfg):
         sol = congestion_aware_initial(pr, rng)
         f, _, _, _ = eval_solution(pr, sol)
         g = builder.build(pr, sol)
-        g.g = global_features(pr, sol, 0.1, 3, f, f)
+        g.g = global_features(pr, sol, 10, 100, 3, f, f)
         gs.append(g)
     return gs
 

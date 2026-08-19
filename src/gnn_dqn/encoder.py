@@ -1,7 +1,7 @@
 """Heterogeneous edge-aware GAT encoder + joint mean/max pooling.
 
 State s_t = concat(mean_pool, max_pool over ALL node types jointly,
-g_t) -> 2 * hidden_dim + G_DIM dims (135 with defaults). With
+g_t) -> 2 * hidden_dim + G_DIM dims (137 with defaults). With
 cfg.use_graph = False the encoder is skipped and s_t = g_t.
 """
 

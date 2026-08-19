@@ -32,7 +32,7 @@ def setup(tmp_path_factory):
     master = instance.build_master(2)
     inst, e_c, l_c = instance.build_scaling_instance(master, 5)
     pr = Params(inst, e_c, l_c, beta_robot=inst["beta_robot"])
-    cfg = PPOConfig(max_iter=60, seed=0)
+    cfg = PPOConfig(search_iterations=60, seed=0)
     norms = compute_norms([pr])
     torch.manual_seed(0)
     model = ActorCritic(cfg)
@@ -84,5 +84,5 @@ def test_evaluate_solution_valid(run):
     assert stats["improve_pct"] == pytest.approx(
         100.0 * (stats["init_cost"] - stats["best_cost"])
         / stats["init_cost"])
-    assert stats["iters_done"] == cfg.max_iter
-    assert sum(stats["action_hist"]) == cfg.max_iter
+    assert stats["iters_done"] == cfg.search_iterations
+    assert sum(stats["action_hist"]) == cfg.search_iterations

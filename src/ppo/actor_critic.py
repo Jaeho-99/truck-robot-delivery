@@ -1,7 +1,7 @@
 """ActorCritic model for PPO (spec: model section).
 
 Reuses SolutionEncoder unchanged (GATv2 + HeteroConv, joint mean/max
-pooling); state = encoder(data) || g_t -> d_state = 135 with defaults.
+pooling); state = encoder(data) || g_t -> d_state = 137 with defaults.
 g_t is attached to the (batched) HeteroData as ``data.g``, matching the
 QNet / ReplayBuffer convention. Heads carry no Dropout/BatchNorm so
 rollout and update see identical outputs.

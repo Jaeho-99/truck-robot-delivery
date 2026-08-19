@@ -40,7 +40,8 @@ T_ROLLOUT = 32
 
 @pytest.fixture(scope="module")
 def cfg():
-    return PPOConfig(t_rollout=T_ROLLOUT, n_envs=1)
+    return PPOConfig(t_rollout=T_ROLLOUT, n_envs=1, n_minibatch=8,
+                     k_epochs=4)
 
 
 @pytest.fixture(scope="module")
@@ -124,12 +125,14 @@ def test_kl_early_stop(env, cfg):
     assert metrics["epochs_run"] < hot.k_epochs
 
 
-# ---- c2: linear decay 0.02 -> 0.003 ----
-def test_c2_linear_decay(cfg):
-    assert c2_schedule(cfg, 0.0) == pytest.approx(0.02)
-    assert c2_schedule(cfg, 0.5) == pytest.approx(0.0115)
-    assert c2_schedule(cfg, 1.0) == pytest.approx(0.003)
-    assert c2_schedule(cfg, 1.7) == pytest.approx(0.003)   # clipped
+# ---- c2 (ent_coef): DR-ALNS default 0.0, schedule still linear ----
+def test_c2_schedule(cfg):
+    for p in (0.0, 0.5, 1.0):          # DR-ALNS: ent_coef fixed at 0
+        assert c2_schedule(cfg, p) == 0.0
+    legacy = dataclasses.replace(cfg, c2_start=0.02, c2_end=0.003)
+    assert c2_schedule(legacy, 0.0) == pytest.approx(0.02)
+    assert c2_schedule(legacy, 0.5) == pytest.approx(0.0115)
+    assert c2_schedule(legacy, 1.7) == pytest.approx(0.003)  # clipped
 
 
 # ---- value loss: pessimistic max, not min ----

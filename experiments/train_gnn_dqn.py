@@ -34,7 +34,8 @@ def main():
                     choices=[20, 50, 100])
     ap.add_argument("--total-steps", type=int, default=300_000)
     ap.add_argument("--search-iterations", type=int, default=100)
-    ap.add_argument("--reward-mode", default="R1")
+    ap.add_argument("--reward-mode", default="binary",
+                    help="binary = DR-ALNS reward (+5 on new best)")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--data", default="data")
     ap.add_argument("--trucks", type=int, default=None,

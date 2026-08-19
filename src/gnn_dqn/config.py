@@ -37,8 +37,9 @@ class Config:
     # training protocol (DR-ALNS)
     total_steps: int = 300_000      # total search iterations trained on
     search_iterations: int = 100    # episode length, fixed per episode
-    # reward
-    reward_mode: str = "R1"         # "R1" | "R2" | "binary"
+    # reward — default "binary" = DR-ALNS reward function
+    # (+5 when the new solution beats the best-known, else 0)
+    reward_mode: str = "binary"     # "R1" | "R2" | "binary"
     kappa: float = 0.02
     # misc
     device: str = "cpu"

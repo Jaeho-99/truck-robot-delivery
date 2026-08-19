@@ -81,7 +81,7 @@ def graph():
     sol = congestion_aware_initial(pr, random.Random(0))
     f, _, _, _ = eval_solution(pr, sol)
     g = GraphBuilder(compute_norms([pr]), cfg).build(pr, sol)
-    g.g = global_features(pr, sol, 0.1, 3, f, f)
+    g.g = global_features(pr, sol, 10, 100, 3, f, f)
     return g
 
 
@@ -92,7 +92,7 @@ def _filled_buffer(graph, T=4, N=2):
         obs = []
         for i in range(N):
             o = graph.clone()
-            o.g = torch.full((1, 7), float(t * N + i))
+            o.g = torch.full((1, 9), float(t * N + i))
             obs.append(o)
         base = t * N
         buf.add(obs, actions=[base, base + 1],
@@ -125,7 +125,7 @@ def test_buffer_minibatch_alignment_and_coverage(graph):
             buf.minibatches(n_minibatch=4, generator=gen):
         assert batch.num_graphs == 2
         # graph <-> tensor alignment: g[0,0] encodes the flat index
-        assert torch.equal(batch.g.view(-1, 7)[:, 0].long(), actions)
+        assert torch.equal(batch.g.view(-1, 9)[:, 0].long(), actions)
         assert torch.allclose(logps, -0.1 * actions.float())
         assert torch.allclose(vals, 0.5 * actions.float())
         assert advs.shape == rets.shape == (2,)

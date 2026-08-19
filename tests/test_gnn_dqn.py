@@ -48,7 +48,7 @@ def _graph(pr, norms, cfg, seed=0):
     sol = congestion_aware_initial(pr, rng)
     f, _, _, _ = eval_solution(pr, sol)
     g = GraphBuilder(norms, cfg).build(pr, sol)
-    g.g = global_features(pr, sol, 0.1, 3, f, f)
+    g.g = global_features(pr, sol, 10, 100, 3, f, f)
     return g, sol
 
 
@@ -74,7 +74,7 @@ def test_graph_structure(pr, norms, cfg):
     served = robot_served_customers(sol)
     for i, c in enumerate(pr.C):
         assert g["customer"].x[i, 4] == (1.0 if c in served else 0.0)
-    assert g.g.shape == (1, 7)
+    assert g.g.shape == (1, 9)
 
 
 def test_state_dim_and_batching(pr, norms, cfg):
@@ -134,7 +134,7 @@ def test_dqn_update_changes_params(pr, norms, cfg):
 
 
 def test_reward_modes():
-    cfg = Config()
+    cfg = Config(reward_mode="R1")
     # accepted improvement
     assert compute_reward(100, 90, 200, 95, True, cfg) == \
         pytest.approx(0.05)

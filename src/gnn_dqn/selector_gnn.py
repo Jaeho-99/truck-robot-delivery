@@ -30,18 +30,26 @@ class GNNSelector:
             self.net.load_state_dict(ckpt["model"])
         except RuntimeError as e:
             raise RuntimeError(
-                "checkpoint was trained with the old vanilla head; "
-                "retrain required") from e
+                "checkpoint incompatible with the current model "
+                "(g_t changed to 9 dims — retraining required)") from e
         self.net.eval()
         self.builder = GraphBuilder(ckpt["norms"], self.cfg)
         self.device = device
 
-    def select(self, pr, sol, progress, stagcount, current_cost,
-               best_cost):
-        """Greedy (destroy_index, repair_index) for the current state."""
+    def select(self, pr, sol, it, iters, stagcount, current_cost,
+               best_cost, best_improved=False, current_accepted=False,
+               current_improved=False):
+        """Greedy (destroy_index, repair_index) for the current state.
+
+        it = completed search iterations, iters = the run's budget
+        (normalizes stagcount/search_budget in g_t); the three flags
+        are the previous iteration's outcome (DR-ALNS obs).
+        """
         data = self.builder.build(pr, sol)
-        data.g = global_features(pr, sol, progress, stagcount,
-                                 current_cost, best_cost)
+        data.g = global_features(pr, sol, it, iters, stagcount,
+                                 current_cost, best_cost,
+                                 best_improved, current_accepted,
+                                 current_improved)
         with torch.no_grad():
             q = self.net(Batch.from_data_list([data]).to(self.device))
         return divmod(int(q.argmax(dim=1).item()), 3)
