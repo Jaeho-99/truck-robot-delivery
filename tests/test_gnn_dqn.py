@@ -158,7 +158,7 @@ def test_smoke_train(pr, norms, tmp_path):
         def sample(self):
             return pr
 
-    cfg = Config(n_episodes=2, episode_len=25, warmup=10,
+    cfg = Config(total_steps=50, search_iterations=25, warmup=10,
                  buffer_capacity=200, target_sync=20)
     t0 = time.time()
     agent = train(cfg, FixedProvider(), str(tmp_path / "m.pt"), norms,
@@ -176,7 +176,7 @@ def test_gnn_selector_end_to_end(pr, norms, tmp_path):
         def sample(self):
             return pr
 
-    cfg = Config(n_episodes=1, episode_len=15, warmup=5,
+    cfg = Config(total_steps=15, search_iterations=15, warmup=5,
                  buffer_capacity=100)
     path = str(tmp_path / "m.pt")
     train(cfg, FixedProvider(), path, norms, log_rows=[])
