@@ -10,7 +10,10 @@ STAGNATION_WINDOW = 500     # fixed, not max_iter-relative
 G_DIM = 7
 
 
-def global_features(pr, sol, progress, stagnation_iters, f_cur, f_best):
+def global_features(pr, sol, progress, stagcount, current_cost,
+                    best_cost):
+    """stagcount = search iterations since the best solution improved
+    (DR-ALNS naming)."""
     served = robot_served_customers(sol)
     eps = max(max(pr.alpha_traffic.values()) - 1.0,
               max(pr.alpha_ped.values()) - 1.0, 1e-9)
@@ -21,13 +24,14 @@ def global_features(pr, sol, progress, stagnation_iters, f_cur, f_best):
               for st in route if st["kind"] == "park"
               for tr in st["deploys"]}
     tot_robots = sum(len(pr.R_k[k]) for k in pr.K)
-    rel_gap = min(max(f_cur / max(f_best, 1e-9) - 1.0, 0.0), 1.0)
+    rel_gap = min(max(current_cost / max(best_cost, 1e-9) - 1.0, 0.0),
+                  1.0)
     return torch.tensor([[
         len(served) / max(1, len(pr.C)),
         rho_cong,
         n_trucks / max(1, len(pr.K)),
         len(robots) / max(1, tot_robots),
         min(max(progress, 0.0), 1.0),
-        min(1.0, stagnation_iters / STAGNATION_WINDOW),
+        min(1.0, stagcount / STAGNATION_WINDOW),
         rel_gap,
     ]], dtype=torch.float32)

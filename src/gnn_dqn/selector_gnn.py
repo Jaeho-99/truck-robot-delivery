@@ -36,12 +36,12 @@ class GNNSelector:
         self.builder = GraphBuilder(ckpt["norms"], self.cfg)
         self.device = device
 
-    def select(self, pr, sol, progress, stagnation_iters, f_cur,
-               f_best):
+    def select(self, pr, sol, progress, stagcount, current_cost,
+               best_cost):
         """Greedy (destroy_index, repair_index) for the current state."""
         data = self.builder.build(pr, sol)
-        data.g = global_features(pr, sol, progress, stagnation_iters,
-                                 f_cur, f_best)
+        data.g = global_features(pr, sol, progress, stagcount,
+                                 current_cost, best_cost)
         with torch.no_grad():
             q = self.net(Batch.from_data_list([data]).to(self.device))
         return divmod(int(q.argmax(dim=1).item()), 3)

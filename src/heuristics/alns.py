@@ -332,10 +332,10 @@ def solve_alns(pr, iters=3000, seed=0, segment=None,
 
     if initial is None:
         initial = congestion_aware_initial
-    cur = initial(pr, rng)
-    cur_cost, feas, _, _ = eval_solution(pr, cur)
-    best, best_cost = cur.clone(), cur_cost
-    init_cost = cur_cost
+    current_solution = initial(pr, rng)
+    current_cost, feas, _, _ = eval_solution(pr, current_solution)
+    best_solution, best_cost = current_solution.clone(), current_cost
+    init_cost = current_cost
 
     # Repair operators (noise amplitude scales with instance cost).
     noise_amp = NOISE_FRAC * init_cost
@@ -378,7 +378,7 @@ def solve_alns(pr, iters=3000, seed=0, segment=None,
         qkw = {"eps_decay_iters": max(1, iters // 2), "seed": seed + 1}
         qkw.update(q_params or {})
         qtab = QTable(N_STATES, len(DESTROY) * len(repair_ops), **qkw)
-        state = get_state(pr, cur)
+        state = get_state(pr, current_solution)
     # Trained GNN+DQN policy (inference only; lazy import keeps this
     # module usable without torch).
     use_gnn = selector == "gnn_dqn"
@@ -397,15 +397,18 @@ def solve_alns(pr, iters=3000, seed=0, segment=None,
             act = qtab.select(state, it)
             di, ri = divmod(act, len(repair_ops))
         elif use_gnn:
-            di, ri = gsel.select(pr, cur, it / iters, it - 1 - best_it,
-                                 cur_cost, best_cost)
+            di, ri = gsel.select(pr, current_solution, it / iters,
+                                 it - 1 - best_it, current_cost,
+                                 best_cost)
         else:
             di = roulette(dW, rng)
             ri = roulette(rW, rng)
         sel_time += time.perf_counter() - t_sel
         a_idx = di * len(repair_ops) + ri
         t_op = time.perf_counter()      # clone+destroy+repair+eval
-        cand = cur.clone()
+        cand = current_solution.clone()
+        # q = "degree of destruction" (DR-ALNS): number of customers
+        # removed this iteration, drawn uniformly from [qmin, qmax]
         q = rng.randint(qmin, qmax)
         pool = DESTROY[di][1](pr, cand, q, rng)
         repair_ops[ri][1](pr, cand, pool, rng)
@@ -417,7 +420,7 @@ def solve_alns(pr, iters=3000, seed=0, segment=None,
 
         if not ok:      # discard coverage/custody/range violations
             infeas_cnt += 1
-            if use_q:   # cur unchanged: zero reward, same state
+            if use_q:   # current solution unchanged: zero reward, same state
                 t_sel = time.perf_counter()
                 qtab.update(state, act, 0.0, state)
                 sel_time += time.perf_counter() - t_sel
@@ -430,7 +433,7 @@ def solve_alns(pr, iters=3000, seed=0, segment=None,
         reward = 0.0
         accept = False
         if cand_cost < best_cost - 1e-9:
-            best, best_cost = cand.clone(), cand_cost
+            best_solution, best_cost = cand.clone(), cand_cost
             if use_gnn:
                 best_it = it
             best_updates += 1
@@ -439,22 +442,22 @@ def solve_alns(pr, iters=3000, seed=0, segment=None,
                                round(cand_cost, 6)))
             reward = sigma[0]
             accept = True
-        elif cand_cost < cur_cost - 1e-9 and key not in seen:
+        elif cand_cost < current_cost - 1e-9 and key not in seen:
             reward = sigma[1]
             accept = True
         else:
-            if cand_cost < cur_cost - 1e-9 or rng.random() < math.exp(
-                    -(cand_cost - cur_cost) / max(T, 1e-9)):
+            if cand_cost < current_cost - 1e-9 or rng.random() < math.exp(
+                    -(cand_cost - current_cost) / max(T, 1e-9)):
                 accept = True
                 if key not in seen:
                     reward = sigma[2]
         seen.add(key)
         if accept:
             accept_cnt += 1
-            cur, cur_cost = cand, cand_cost
+            current_solution, current_cost = cand, cand_cost
         if use_q:
             t_sel = time.perf_counter()
-            s_next = get_state(pr, cur) if accept else state
+            s_next = get_state(pr, current_solution) if accept else state
             qtab.update(state, act, reward, s_next)
             state = s_next
             sel_time += time.perf_counter() - t_sel
@@ -498,4 +501,4 @@ def solve_alns(pr, iters=3000, seed=0, segment=None,
     if use_q:
         labels = [f"{d[0]}+{r[0]}" for d in DESTROY for r in repair_ops]
         stats["q_summary"] = qtab.summary(labels)
-    return best, best_cost, stats
+    return best_solution, best_cost, stats
