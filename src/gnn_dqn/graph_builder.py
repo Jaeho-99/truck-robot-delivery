@@ -34,6 +34,24 @@ EDGE_TYPES = (
 )
 
 
+def pad_edge_types(data):
+    """Give every EDGE_TYPES triplet a (possibly empty) store.
+
+    Batch.from_data_list mis-collates HeteroData lists whose edge-store
+    key sets differ: edges of a graph missing elsewhere get node
+    offsets from the wrong graph, silently rewiring them across graph
+    boundaries (measured Q-value corruption up to ~0.06 in the DQN
+    replay batch). Padding every graph to one shared key set makes
+    collation exact and keeps single-graph and batched forwards
+    identical; build() therefore always returns padded graphs.
+    """
+    for et in EDGE_TYPES:
+        if et not in data.edge_types:
+            data[et].edge_index = torch.zeros((2, 0), dtype=torch.long)
+            data[et].edge_attr = torch.zeros((0, EDGE_DIMS[et[1]]))
+    return data
+
+
 def horizon(pr):
     """Planning horizon T (pr has no explicit horizon field)."""
     return max(pr.l_c.values()) * 1.2
@@ -229,7 +247,7 @@ class GraphBuilder:
                                                 dtype=torch.long)
             data[key].edge_attr = torch.tensor(feats[key],
                                                dtype=torch.float32)
-        return data
+        return pad_edge_types(data)
 
     def update(self, graph, pr, sol, changed_customers):
         """Incremental update stub — v1 delegates to a full rebuild."""

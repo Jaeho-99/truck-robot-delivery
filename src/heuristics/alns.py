@@ -317,11 +317,14 @@ def roulette(weights, rng):
 def solve_alns(pr, iters=3000, seed=0, segment=None,
                sigma=(5.0, 3.0, 1.0), reaction=0.2, w_start=W_START,
                time_limit_s=None, initial=None, selector="roulette",
-               q_params=None):
+               q_params=None, iter_trace=None):
     """Run ALNS and return (best_solution, best_cost, stats).
 
     ``initial``: initial-solution constructor ``f(pr, rng) -> Solution``
     (default: congestion_aware_initial).
+    ``iter_trace``: optional list; if given, one
+    (it, accepted, current_cost) tuple is appended per iteration
+    (instrumentation only — never touches rng).
     ``time_limit_s``: wall-clock cap in seconds; exceeding it stops the
     run early (for large instances). The cooling schedule stays based
     on ``iters``, so an early stop may end in the hot phase.
@@ -441,6 +444,8 @@ def solve_alns(pr, iters=3000, seed=0, segment=None,
                 sel_time += time.perf_counter() - t_sel
             if use_gnn:
                 g_flags = (False, False, False)
+            if iter_trace is not None:
+                iter_trace.append((it, 0, round(current_cost, 9)))
             continue
 
         # Operator scores (DR-ALNS weights w1..w4 = 5, 3, 1, 0):
@@ -475,6 +480,9 @@ def solve_alns(pr, iters=3000, seed=0, segment=None,
         if accept:
             accept_cnt += 1
             current_solution, current_cost = cand, cand_cost
+        if iter_trace is not None:
+            iter_trace.append((it, int(accept),
+                               round(current_cost, 9)))
         if use_gnn:
             g_flags = (found_best, accept, accept and was_improving)
         if use_q:

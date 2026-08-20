@@ -1,6 +1,5 @@
 """Destroy and repair operators, and insertion-candidate enumeration."""
 
-import copy
 import math
 
 from .solution import eval_solution, eval_truck
@@ -20,6 +19,15 @@ N_PHYS_NEAR = 2   # nearest physical locations tried for a new stop
 # Insertion-candidate enumeration (modes A/B/C/D — shared by
 # greedy and regret repair)
 # ============================================================
+def _with_new_trip(route, si, st, trip):
+    """Copy-on-write: route with ``trip`` appended at stop index si."""
+    new_st = dict(st)
+    new_st["deploys"] = st["deploys"] + [trip]
+    nr = list(route)
+    nr[si] = new_st
+    return nr
+
+
 def enum_insertions(pr, sol, c):
     """Yield every insertion candidate (k, new_route) for customer c.
 
@@ -33,6 +41,14 @@ def enum_insertions(pr, sol, c):
 
     Feasibility (custody, range, capacity) is judged by eval_truck, so
     only the structures are generated here.
+
+    Candidates are built copy-on-write: only containers on the
+    modified path are fresh objects, untouched stops/trips are SHARED
+    with sol's route and must never be mutated in place (eval_truck
+    only reads; apply_insertion swaps the whole route list; in-place
+    edits happen only on Solution.clone() deep copies). This replaces
+    the per-candidate route deepcopy that dominated ALNS runtime
+    (~65% in profiling).
     """
     used = sol.used_copies()
     for k in pr.K:
@@ -52,8 +68,14 @@ def enum_insertions(pr, sol, c):
                 if len(tr["custs"]) >= pr.beta_robot:
                     continue
                 for pos in range(len(tr["custs"]) + 1):
-                    nr = copy.deepcopy(route)
-                    nr[si]["deploys"][ti]["custs"].insert(pos, c)
+                    new_tr = dict(tr)
+                    new_tr["custs"] = (tr["custs"][:pos] + [c]
+                                       + tr["custs"][pos:])
+                    new_st = dict(st)
+                    new_st["deploys"] = list(st["deploys"])
+                    new_st["deploys"][ti] = new_tr
+                    nr = list(route)
+                    nr[si] = new_st
                     yield k, nr
 
         # --- C. deploy at an existing parking stop (all robots tried —
@@ -63,17 +85,16 @@ def enum_insertions(pr, sol, c):
                 # ret 1) later existing parking stops (L_RET_EXIST max)
                 for sj, st2 in [pp for pp in park_pos
                                 if pp[0] > si][:L_RET_EXIST]:
-                    nr = copy.deepcopy(route)
-                    nr[si]["deploys"].append(
+                    yield k, _with_new_trip(
+                        route, si, st,
                         {"r": r, "custs": [c], "ret_p": st2["p"]})
-                    yield k, nr
                 # ret 2) fresh copy at the same location right behind
                 #        (waiting style, consumes two copies)
                 grp = pr.park_groups[pr.copy_to_phys[st["p"]]]
                 free = [cp for cp in grp if cp not in used]
                 if free:
-                    nr = copy.deepcopy(route)
-                    nr[si]["deploys"].append(
+                    nr = _with_new_trip(
+                        route, si, st,
                         {"r": r, "custs": [c], "ret_p": free[0]})
                     nr.insert(si + 1, {"kind": "park", "p": free[0],
                                        "deploys": []})
@@ -88,8 +109,8 @@ def enum_insertions(pr, sol, c):
                         continue
                     for pos in range(si + 1,
                                      min(len(route), si + W_RET_NEW) + 1):
-                        nr = copy.deepcopy(route)
-                        nr[si]["deploys"].append(
+                        nr = _with_new_trip(
+                            route, si, st,
                             {"r": r, "custs": [c], "ret_p": free2[0]})
                         nr.insert(pos, {"kind": "park", "p": free2[0],
                                         "deploys": []})
@@ -106,7 +127,7 @@ def enum_insertions(pr, sol, c):
                 for pos in range(len(route) + 1):
                     # ret a) second copy of the same location (waiting)
                     if len(free) >= 2:
-                        nr = copy.deepcopy(route)
+                        nr = list(route)
                         nr.insert(pos, {"kind": "park", "p": dep_cp,
                                         "deploys": [{"r": r,
                                                      "custs": [c],
@@ -118,7 +139,7 @@ def enum_insertions(pr, sol, c):
                     later = [st2 for si2, st2 in park_pos
                              if si2 >= pos][:L_RET_EXIST]
                     for st2 in later:
-                        nr = copy.deepcopy(route)
+                        nr = list(route)
                         nr.insert(pos, {"kind": "park", "p": dep_cp,
                                         "deploys": [{"r": r,
                                                      "custs": [c],

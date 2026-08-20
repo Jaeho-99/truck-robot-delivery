@@ -133,6 +133,35 @@ def test_dqn_update_changes_params(pr, norms, cfg):
     assert changed
 
 
+def test_mixed_structure_batch_consistency(pr, norms, cfg):
+    """Graphs with different edge-type sets (robot trips vs truck-only)
+    batch to the SAME Q-values as individual forwards. Without the
+    edge-type padding in GraphBuilder.build, Batch.from_data_list
+    rewires edges across graph boundaries (measured Q corruption
+    ~0.06) — this pins the replay-batch fix."""
+    from torch_geometric.data import Batch
+    from src.gnn_dqn.encoder import QNet
+    from src.gnn_dqn.graph_builder import EDGE_TYPES
+    from src.heuristics.alns import truck_only_initial
+
+    torch.manual_seed(0)
+    net = QNet(cfg)
+    net.eval()
+    graphs = []
+    for init in (congestion_aware_initial, truck_only_initial):
+        sol = init(pr, random.Random(0))
+        f, _, _, _ = eval_solution(pr, sol)
+        g = GraphBuilder(norms, cfg).build(pr, sol)
+        g.g = global_features(pr, sol, 5, 100, 0, f, f)
+        assert set(g.edge_types) == set(EDGE_TYPES)   # padded
+        graphs.append(g)
+    with torch.no_grad():
+        q_ind = torch.cat([net(Batch.from_data_list([g]))
+                           for g in graphs])
+        q_bat = net(Batch.from_data_list(graphs))
+    assert torch.allclose(q_ind, q_bat, atol=1e-5)
+
+
 def test_reward_modes():
     cfg = Config(reward_mode="R1")
     # accepted improvement
