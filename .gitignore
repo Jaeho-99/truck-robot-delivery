@@ -1,10 +1,10 @@
 # experiment outputs (directory structure kept via .gitkeep)
-results/*
-!results/.gitkeep
+output/*/*
+!output/*/.gitkeep
 *.csv
 *.json
-!experiments/configs/*.json
 *.svg
+*.npz
 CHANGELOG.md
 MILP_VERIFICATION.md
 CLAUDE.md
@@ -19,11 +19,30 @@ __pycache__/
 .venv/
 .pytest_cache/
 
-# solver
-gurobi.log
+# logs (gurobi, exact solver, training console dumps)
+*.log
 
 # os
 .DS_Store
 
 # temporary learning/debug scripts
 temp_*
+
+# instance data (boundaries, cells, raw + processed instances) is not
+# public and is never committed
+data/
+
+# interactive route maps written by scripts/plot_result.py
+*.html
+
+# python build artifacts
+build/
+dist/
+venv/
+
+# editors
+.vscode/
+.idea/
+
+# reference-only spec, never committed
+docs/ppo_spec.md
