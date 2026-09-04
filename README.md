@@ -1,170 +1,151 @@
-# Truck-Robot Collaborative Last-Mile Delivery
+# Truck-Robot Delivery
 
-Source code for the paper on route optimization for truck-robot
-collaborative last-mile delivery under zone-based dual (traffic /
-pedestrian) congestion. Trucks carry autonomous delivery robots,
-deploy them at parking nodes, and retrieve them at possibly different
-parking nodes later on the route.
+Four independent methods solve the same preprocessed truck-robot delivery
+instances:
 
-All methods share one objective and feasibility definition:
+- `src/exact/solve.py`: Gurobi exact MILP
+- `src/alns/solve.py`: vanilla roulette-wheel ALNS
+- `src/ppo_alns/`: PPO-ALNS (`alns.py`, `ppo.py`, `train.py`, `test.py`)
+- `src/gnn_ppo_alns/`: GNN-PPO-ALNS (`alns.py`, `gnn.py`, `ppo.py`,
+  `train.py`, `test.py`)
 
-* **Exact** — a MILP of the full formulation (constraints (1)-(70)),
-  solved with Gurobi ([`src/model.py`](src/model.py)).
-* **ALNS** — adaptive large neighborhood search (Ropke & Pisinger
-  2006 skeleton: random/worst/related destroy, greedy/greedy-noise/
-  regret-2 repair, simulated-annealing acceptance) with a
-  congestion-aware initial solution
-  ([`src/heuristics/`](src/heuristics/)). Operator selection is
-  pluggable (`solve_alns(selector=...)`):
-  * `roulette` — classic roulette-wheel adaptive weights (vanilla),
-  * `qlearning` — **QL-ALNS**, online tabular Q-learning over
-    (destroy, repair) pairs
-    ([`src/heuristics/qlearning.py`](src/heuristics/qlearning.py)),
-  * `gnn_dqn` — **GNN-DQN-ALNS**, a GATv2 encoder over the current
-    solution graph plus a Dueling Double-DQN head, trained offline
-    ([`src/gnn_dqn/`](src/gnn_dqn/)).
+## Data flow
 
-## Repository structure
-
-The layout follows the [INFORMS Journal on Computing software
-template](https://github.com/INFORMSJoC) convention of separating
-source code, data, scripts, and results:
-
-```
-├── src/                      # algorithm code only (no experiment I/O)
-│   ├── model.py              # MILP formulation (+ fix_binaries
-│   │                         #   verification mode)
-│   ├── heuristics/           # metaheuristics
-│   │   ├── alns.py           # Params, initial solutions, ALNS driver
-│   │   │                     #   (selector plug-in, instrumentation)
-│   │   ├── operators.py      # destroy/repair operators
-│   │   ├── solution.py       # solution representation and evaluator
-│   │   ├── qlearning.py      # tabular Q-learning selector (QL-ALNS)
-│   │   └── validator.py      # independent feasibility/objective
-│   │                         #   validator (no evaluator reuse)
-│   ├── gnn_dqn/              # GNN-DQN operator selection
-│   │   ├── config.py         # all hyperparameters (dataclass)
-│   │   ├── graph_builder.py  # Solution -> HeteroData graph
-│   │   ├── global_features.py# 7-dim global state g_t
-│   │   ├── encoder.py        # GATv2 encoder + Dueling DQN head
-│   │   ├── dqn_agent.py      # replay buffer, Double-DQN updates
-│   │   ├── reward.py         # R1 / R2 / binary reward modes
-│   │   ├── provider.py       # train/test instance providers
-│   │   ├── trainer.py        # offline training loop
-│   │   ├── normalization.py  # feature normalization constants
-│   │   └── selector_gnn.py   # frozen-model inference adapter
-│   ├── instance.py           # instance schema and generators
-│   ├── plotting.py           # instance/route SVG figures
-│   └── utils.py              # reports, diagnostics, CSV, payloads
-├── data/
-│   └── generator.py          # instance generation script
-├── experiments/
-│   ├── run_experiment.py     # exact vs ALNS runner (config-driven)
-│   ├── run_qlearning.py      # selector comparison runner (saves
-│   │                         #   solutions, traces, validator checks)
-│   ├── train_gnn_dqn.py      # GNN-DQN offline training CLI
-│   ├── verify_solution_milp.py # MILP fixing check of saved solutions
-│   ├── make_route_svgs.py    # route SVGs from saved solutions
-│   └── configs/              # experiment configs (JSON)
-│       ├── main_alns.json / main_ql.json / main_gnn.json
-│       └── toy_small.json / toy_scaling.json
-├── tests/                    # pytest: gnn_dqn + validator suites
-├── models/                   # trained checkpoints (gitignored)
-└── results/                  # experiment outputs (gitignored)
+```text
+data/raw/{train,test}/n{20,50,100}/*.json
+                    │
+                    ▼  scripts/preprocess.py
+data/processed*/{train,test}/n{20,50,100}/*.npz
+                    │
+                    ├── exact
+                    ├── vanilla ALNS
+                    ├── PPO-ALNS
+                    └── GNN-PPO-ALNS
 ```
 
-Algorithm code (`src/`) contains no experiment settings or file paths;
-experiments are described entirely by JSON configs under
-`experiments/configs/`.
+The model code never reconstructs distances or congestion-adjusted travel
+times. It loads `d`, `tau_truck`, and `tau_robot` from each NPZ and performs
+only route and assignment optimization. Runtime-only fleet, capacity, cost,
+range, service-time, and deadline values come from `configs/params.yaml`.
 
-## Installation
-
-Python >= 3.9. Two dependency groups:
-
-* **Exact / plotting**: [Gurobi](https://www.gurobi.com) (tested with
-  Gurobi 12.0; free academic license), numpy, matplotlib.
-* **GNN-DQN**: torch + torch_geometric (pinned in
-  `requirements.txt`); CPU is sufficient. The heuristics themselves
-  are pure standard library — ALNS and QL-ALNS run without any of the
-  above.
+Install the local packages once from the repository root:
 
 ```bash
-pip install -r requirements.txt
+python -m pip install -e .
 ```
 
-## Usage
+## Preprocessing
 
-Selector comparison (vanilla ALNS / QL-ALNS / GNN-DQN-ALNS) on the
-nested scaling instances (n = 5..100, master seed 1):
+For n20 train and test data:
 
 ```bash
-python experiments/run_qlearning.py \
-    --config experiments/configs/main_alns.json   # or main_ql / main_gnn
+python scripts/preprocess.py --split all --size 20
 ```
 
-Each run writes to `results/<experiment>/`: `runs_compare.csv` /
-`summary_compare.csv` (objective, runtime, cost breakdown, feasibility
-re-checks, selector instrumentation), `solutions/sol_*.json` (best
-solution of every run), and `traces/trace_*.csv` (convergence).
+Use `--force` after changing preprocessing-relevant geometry or speed values.
+For a sensitivity dataset, `--tag NAME` writes under
+`data/processed_NAME/`.
 
-Train the GNN-DQN selector (masters seeds 2-4; the test instances of
-master seed 1 are never sampled):
+## Running each method
+
+`--size` is always required. The untagged commands for n20 are:
 
 ```bash
-python experiments/train_gnn_dqn.py \
-    --episodes 3000 --episode-len 500 --train-freq 4 \
-    --trucks 4 --robots 2 --out models/gnn_dqn_final.pt
+python src/exact/solve.py --size 20
+python src/alns/solve.py --size 20
+python src/ppo_alns/train.py --size 20
+python src/ppo_alns/test.py --size 20
+python src/gnn_ppo_alns/train.py --size 20
+python src/gnn_ppo_alns/test.py --size 20
 ```
 
-Exact vs ALNS comparison (Gurobi required):
+The exact solver processes one instance by default; pass `--limit 0` to run
+all test instances. ALNS and learned selectors process all test instances by
+default and accept `--limit N`.
+
+PPO-ALNS and GNN-PPO-ALNS use the same epsilon-mixed sampling policy during
+training and testing: `0.9 * pi_actor + 0.1 / 9` by default. Training accepts
+`--eps-uniform VALUE`; the value is stored in the checkpoint and testing
+always reloads it, so the two phases cannot silently use different epsilon
+settings. Checkpoints created before this setting was added must be retrained.
+
+Both PPO methods support three semantic reward modes through
+`--reward-mode`:
+
+| Mode | Reward | Checkpoint token |
+|---|---|---|
+| `alns_5310` | new best/current improvement/accepted/else = 5/3/1/0 | `reward_alns_5310` |
+| `new_best_5` | new best = 5, else = 0 | `reward_new_best_5` |
+| `magnitude` | `10 * max(0, delta_best) / initial_obj` | `reward_magnitude` |
+
+Use the same mode for training and testing. The checkpoint stores the mode,
+and testing rejects a mismatch. For example:
 
 ```bash
-python experiments/run_experiment.py \
-    --config experiments/configs/toy_small.json
+python src/ppo_alns/train.py --size 20 --reward-mode alns_5310
+python src/ppo_alns/test.py --size 20 --reward-mode alns_5310
+
+python src/gnn_ppo_alns/train.py --size 20 --reward-mode magnitude
+python src/gnn_ppo_alns/test.py --size 20 --reward-mode magnitude
 ```
 
-Post-processing of saved solutions:
+The first PPO command writes
+`models/ppo_alns_n20_reward_alns_5310.pt`; the GNN command writes
+`models/gnn_ppo_alns_n20_reward_magnitude.pt`. Training logs and test outputs
+also include the same reward token so reward experiments do not overwrite one
+another.
+
+All entry points also accept `--params PATH` and `--tag NAME`. A tag selects
+`data/processed_NAME`, writes to `output/METHOD_NAME`, and adds `_NAME` to the
+checkpoint filename. PPO checkpoints store and verify the preprocessing hash,
+fleet, size, and tag. Older checkpoints without this metadata must be
+retrained before testing.
+
+Results are written under:
+
+```text
+output/{exact,alns,ppo_alns,gnn_ppo_alns}/n{size}/
+```
+
+Trained PPO checkpoints are written under `models/`.
+
+## Plotting one result
+
+`scripts/plot_result.py` accepts one result JSON from any of the four methods.
+It infers the matching processed/raw test instance and writes two route maps
+next to the JSON:
 
 ```bash
-# route figures (SVG) for every saved solution of an experiment
-python experiments/make_route_svgs.py --results-dir results/main_ql
-
-# gold-standard check: fix the MILP's routing binaries to a saved
-# solution and confirm the objective matches (requires Gurobi)
-python experiments/verify_solution_milp.py \
-    --solution results/main_ql/solutions/sol_n15_s1_qlearning_0.json
+python scripts/plot_result.py output/exact/n5/test_n5_000.json
 ```
 
-Tests:
+The example creates `output/exact/n5/test_n5_000_map.svg` and
+`output/exact/n5/test_n5_000_map.html`, an interactive OpenStreetMap (Leaflet)
+view of the same routes. Use `--labels` to show node and administrative-dong
+labels on the static map. PNG output remains available with `--format png`.
+
+## Summarizing the experiments
+
+`scripts/summarize_results.py` reads what is already under `output/` and
+writes two tables per experiment size, straight into `output/`:
 
 ```bash
-python -m pytest tests/ -q
+python scripts/summarize_results.py            # all sizes found
+python scripts/summarize_results.py --size 10  # one size
 ```
 
-## Reproducibility
+- `training_time_n{size}.csv` — one row per PPO-ALNS / GNN-PPO-ALNS training
+  setting: total wall-clock training time plus the CLI arguments, PPO
+  configuration, processed-data metadata, and a snapshot of `params.yaml`.
+  New training runs write these values to `training_metadata_reward_*.json`;
+  older logs remain supported using their last recorded episode time.
+- `comparison_n{size}.csv` — one row per tested method (ALNS, PPO-ALNS,
+  GNN-PPO-ALNS) with the min / mean / max of the objective and of the
+  inference runtime. Test arguments, selection mode, checkpoint settings, and
+  problem parameters are taken from `test_metadata*.json` when available.
 
-All randomness is seeded:
-
-* Instances are rebuilt deterministically from the seeds in the config
-  (`src/instance.py`); the scaling instances use a fixed master pool of
-  100 customers sliced to the first n, so instances are nested across
-  sizes.
-* ALNS is fully deterministic given the run seed, for every selector
-  (the learned selectors use dedicated rng streams / frozen models).
-* The exact method reports the proven optimality gap; optimal
-  objective values are reproducible, while runtimes and time-limited
-  incumbents may vary across machines.
-
-Solution correctness is certified on three independent levels: the
-ALNS evaluator, a from-primitives validator
-(`src/heuristics/validator.py`, run automatically on every saved
-solution), and the MILP fixing check
-(`experiments/verify_solution_milp.py`).
-
-## Notes
-
-* `results/` and `models/*.pt` are gitignored; the directory structure
-  is kept via `.gitkeep`. Trained checkpoints must be copied between
-  machines (or retrained) separately.
-* A real-data case study will be added later as an additional config
-  plus an instance parser in `src/instance.py`.
+The tables contain no opaque run ID. The script compares the readable setting
+columns: re-running it refreshes the same setting, while a different setting is
+appended below the previous rows. Run the summarizer after each new experiment;
+the simple model-specific training and test artifact filenames are overwritten
+when the same model, reward mode, and tag are executed again.
