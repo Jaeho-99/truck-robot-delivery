@@ -1,6 +1,13 @@
-gurobipy>=11.0
-numpy>=1.24
+# shared by every method (instance loading, geometry, preprocessing, plots)
 matplotlib>=3.7
-# gnn_dqn (learned operator selection) only:
+numpy>=1.24
+PyYAML>=6.0
+pyproj>=3.6
+scipy>=1.10
+
+# exact MILP solver (src/exact) only:
+gurobipy>=11.0
+
+# PPO-ALNS / GNN-PPO-ALNS (src/ppo_alns, src/gnn_ppo_alns) only:
 torch==2.13.0
 torch_geometric==2.8.0.post1
