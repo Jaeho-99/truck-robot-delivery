@@ -13,7 +13,7 @@ dependencies = [
   "PyYAML>=6.0",
   "pyproj>=3.6",
   "scipy>=1.10",
-  "torch==2.13.0",
+  "torch==2.5.1",
   "torch_geometric==2.8.0.post1",
 ]
 
@@ -23,3 +23,16 @@ package-dir = {"" = "src"}
 [tool.setuptools.packages.find]
 where = ["src"]
 namespaces = true
+
+[tool.ruff]
+line-length = 79
+target-version = "py310"
+# Experimental variants keep their existing source style and behavior.
+extend-exclude = [
+  "src/v2_claude",
+  "src/v2_codex",
+  "scripts/summarize_results_v2_claude.py",
+]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]

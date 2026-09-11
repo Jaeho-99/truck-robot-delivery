@@ -19,14 +19,13 @@ from __future__ import annotations
 
 import argparse
 import csv
-from datetime import datetime
 import json
 import math
-from pathlib import Path
 import re
 import statistics
+from datetime import datetime
+from pathlib import Path
 from typing import Any, Mapping
-
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 OUTPUT_DIR = REPO_ROOT / "output"
@@ -43,24 +42,54 @@ TRAINING_TABLE = "training_time_n{size}.csv"
 COMPARISON_TABLE = "comparison_n{size}.csv"
 
 TRAINING_HEAD = (
-    "recorded_at", "model", "tag", "size", "reward_mode",
-    "train_time_s", "train_time_hms", "time_source", "episodes",
-    "final_step", "checkpoint",
+    "recorded_at",
+    "model",
+    "tag",
+    "size",
+    "reward_mode",
+    "train_time_s",
+    "train_time_hms",
+    "time_source",
+    "episodes",
+    "final_step",
+    "checkpoint",
 )
 COMPARISON_HEAD = (
-    "recorded_at", "model", "tag", "size", "reward_mode",
-    "selection_mode", "n_instances", "n_seeds", "n_runs",
-    "obj_min", "obj_mean", "obj_max", "runtime_s_min",
-    "runtime_s_mean", "runtime_s_max", "checkpoint",
+    "recorded_at",
+    "model",
+    "tag",
+    "size",
+    "reward_mode",
+    "selection_mode",
+    "n_instances",
+    "n_seeds",
+    "n_runs",
+    "obj_min",
+    "obj_mean",
+    "obj_max",
+    "runtime_s_min",
+    "runtime_s_mean",
+    "runtime_s_max",
+    "checkpoint",
 )
 
 _TRAINING_VALUE_FIELDS = {
-    "recorded_at", "train_time_s", "train_time_hms", "time_source",
-    "episodes", "final_step",
+    "recorded_at",
+    "train_time_s",
+    "train_time_hms",
+    "time_source",
+    "episodes",
+    "final_step",
 }
 _COMPARISON_VALUE_FIELDS = {
-    "recorded_at", "n_runs", "obj_min", "obj_mean", "obj_max",
-    "runtime_s_min", "runtime_s_mean", "runtime_s_max",
+    "recorded_at",
+    "n_runs",
+    "obj_min",
+    "obj_mean",
+    "obj_max",
+    "runtime_s_min",
+    "runtime_s_mean",
+    "runtime_s_max",
 }
 
 
@@ -81,8 +110,11 @@ def _read_json(path: Path) -> dict[str, Any]:
 
 
 def _artifact_time(path: Path) -> str:
-    return datetime.fromtimestamp(path.stat().st_mtime).astimezone().isoformat(
-        timespec="seconds")
+    return (
+        datetime.fromtimestamp(path.stat().st_mtime)
+        .astimezone()
+        .isoformat(timespec="seconds")
+    )
 
 
 def _hms(seconds: float) -> str:
@@ -100,8 +132,9 @@ def _flatten(prefix: str, value: Any) -> dict[str, Any]:
         if isinstance(item, Mapping):
             result.update(_flatten(name, item))
         elif isinstance(item, (list, tuple)):
-            result[name] = json.dumps(item, ensure_ascii=False,
-                                      separators=(",", ":"))
+            result[name] = json.dumps(
+                item, ensure_ascii=False, separators=(",", ":")
+            )
         else:
             result[name] = item
     return result
@@ -121,9 +154,15 @@ def _metadata_fields(metadata: Mapping[str, Any]) -> dict[str, Any]:
     return fields
 
 
-def _validate_metadata(metadata: Mapping[str, Any], source: Path, *,
-                       method: str, size: int, tag: str,
-                       reward_mode: str | None) -> None:
+def _validate_metadata(
+    metadata: Mapping[str, Any],
+    source: Path,
+    *,
+    method: str,
+    size: int,
+    tag: str,
+    reward_mode: str | None,
+) -> None:
     """Reject stale or misnamed metadata before joining it to a result."""
     expected = {
         "model": method,
@@ -139,7 +178,8 @@ def _validate_metadata(metadata: Mapping[str, Any], source: Path, *,
         if stored != value:
             raise ValueError(
                 f"metadata {field}={stored!r} does not match {value!r}: "
-                f"{source}")
+                f"{source}"
+            )
 
 
 def _method_and_tag(directory_name: str) -> tuple[str, str] | None:
@@ -148,7 +188,7 @@ def _method_and_tag(directory_name: str) -> tuple[str, str] | None:
         if directory_name == method:
             return method, ""
         if directory_name.startswith(f"{method}_"):
-            return method, directory_name[len(method) + 1:]
+            return method, directory_name[len(method) + 1 :]
     return None
 
 
@@ -157,22 +197,25 @@ def _runs(methods: tuple[str, ...]) -> list[tuple[str, str, int, Path]]:
     if not OUTPUT_DIR.is_dir():
         return []
     found = []
-    for method_dir in sorted(path for path in OUTPUT_DIR.iterdir()
-                             if path.is_dir()):
+    for method_dir in sorted(
+        path for path in OUTPUT_DIR.iterdir() if path.is_dir()
+    ):
         parsed = _method_and_tag(method_dir.name)
         if parsed is None or parsed[0] not in methods:
             continue
         method, tag = parsed
-        for size_dir in sorted(path for path in method_dir.iterdir()
-                               if path.is_dir()):
+        for size_dir in sorted(
+            path for path in method_dir.iterdir() if path.is_dir()
+        ):
             match = SIZE_PATTERN.fullmatch(size_dir.name)
             if match is not None:
                 found.append((method, tag, int(match.group(1)), size_dir))
     return found
 
 
-def _checkpoint_path(method: str, tag: str, size: int,
-                     reward_token: str) -> Path:
+def _checkpoint_path(
+    method: str, tag: str, size: int, reward_token: str
+) -> Path:
     suffix = f"_{tag}" if tag else ""
     return MODELS_DIR / f"{method}_n{size}_{reward_token}{suffix}.pt"
 
@@ -187,7 +230,8 @@ def _checkpoint_fields(path: Path) -> dict[str, Any]:
     except ModuleNotFoundError as exc:
         raise RuntimeError(
             "PyTorch is required to read legacy checkpoints; rerun training "
-            "to create a JSON metadata snapshot") from exc
+            "to create a JSON metadata snapshot"
+        ) from exc
     checkpoint = torch.load(path, map_location="cpu", weights_only=True)
     if not isinstance(checkpoint, Mapping):
         raise ValueError("checkpoint root must be a mapping")
@@ -207,15 +251,17 @@ def _finite_float(row: Mapping[str, str], field: str, path: Path) -> float:
     return value
 
 
-def _consistent_reward(rows: list[dict[str, str]], path: Path,
-                       expected: str | None = None) -> str:
+def _consistent_reward(
+    rows: list[dict[str, str]], path: Path, expected: str | None = None
+) -> str:
     modes = {row.get("reward_mode", "") for row in rows}
     if len(modes) != 1:
         raise ValueError(f"mixed reward modes in {path}: {sorted(modes)}")
     mode = modes.pop()
     if expected is not None and mode != expected:
         raise ValueError(
-            f"reward mode {mode!r} in {path} does not match {expected!r}")
+            f"reward mode {mode!r} in {path} does not match {expected!r}"
+        )
     return mode
 
 
@@ -227,38 +273,55 @@ def _training_rows(
     for method, tag, size, directory in _runs(TRAINED_METHODS):
         for log_path in sorted(directory.glob("train_reward_*.csv")):
             try:
-                reward_token = log_path.stem[len("train_"):]
+                reward_token = log_path.stem[len("train_") :]
                 expected_reward = reward_token.removeprefix("reward_")
                 log = _read_csv(log_path)
                 if not log:
                     raise ValueError("training log is empty")
                 reward_mode = _consistent_reward(
-                    log, log_path, expected_reward)
+                    log, log_path, expected_reward
+                )
                 elapsed_values = [
                     _finite_float(item, "elapsed_s", log_path) for item in log
                 ]
                 checkpoint = _checkpoint_path(
-                    method, tag, size, reward_token).resolve()
+                    method, tag, size, reward_token
+                ).resolve()
                 seen_checkpoints.add(checkpoint)
-                metadata_path = directory / f"training_metadata_{reward_token}.json"
-                metadata = (_read_json(metadata_path)
-                            if metadata_path.is_file() else {})
+                metadata_path = (
+                    directory / f"training_metadata_{reward_token}.json"
+                )
+                metadata = (
+                    _read_json(metadata_path)
+                    if metadata_path.is_file()
+                    else {}
+                )
                 if metadata:
                     _validate_metadata(
-                        metadata, metadata_path, method=method, size=size,
-                        tag=tag, reward_mode=reward_mode)
+                        metadata,
+                        metadata_path,
+                        method=method,
+                        size=size,
+                        tag=tag,
+                        reward_mode=reward_mode,
+                    )
                     elapsed = float(metadata["train_time_s"])
                     if not math.isfinite(elapsed) or elapsed < 0.0:
                         raise ValueError(
-                            f"invalid train_time_s in {metadata_path}")
+                            f"invalid train_time_s in {metadata_path}"
+                        )
                     recorded_at = str(metadata.get("completed_at") or now)
                     time_source = "training_metadata"
-                    checkpoint_label = str(metadata.get("checkpoint") or checkpoint)
+                    checkpoint_label = str(
+                        metadata.get("checkpoint") or checkpoint
+                    )
                     settings = _metadata_fields(metadata)
                 else:
                     elapsed = max(elapsed_values)
                     recorded_at = _artifact_time(log_path)
-                    time_source = "episode_log_max (legacy; final update excluded)"
+                    time_source = (
+                        "episode_log_max (legacy; final update excluded)"
+                    )
                     checkpoint_label = str(checkpoint)
                     settings = _checkpoint_fields(checkpoint)
                 step_values = [int(item["step"]) for item in log]
@@ -275,12 +338,25 @@ def _training_rows(
                     "final_step": max(step_values),
                     "checkpoint": checkpoint_label,
                 }
-                row.update({key: value for key, value in settings.items()
-                            if key not in row})
+                row.update(
+                    {
+                        key: value
+                        for key, value in settings.items()
+                        if key not in row
+                    }
+                )
                 by_size.setdefault(size, []).append(row)
-            except (KeyError, TypeError, ValueError, RuntimeError, OSError,
-                    json.JSONDecodeError) as exc:
-                print(f"  ! invalid training artifact skipped: {log_path}: {exc}")
+            except (
+                KeyError,
+                TypeError,
+                ValueError,
+                RuntimeError,
+                OSError,
+                json.JSONDecodeError,
+            ) as exc:
+                print(
+                    f"  ! invalid training artifact skipped: {log_path}: {exc}"
+                )
     return by_size, seen_checkpoints
 
 
@@ -289,22 +365,26 @@ def _result_files(method: str, directory: Path) -> list[tuple[Path, str]]:
         summary = directory / "summary.csv"
         return [(summary, "")] if summary.is_file() else []
     return [
-        (path, path.stem[len("test_"):])
+        (path, path.stem[len("test_") :])
         for path in sorted(directory.glob("test_reward_*.csv"))
     ]
 
 
-def _test_metadata(method: str, directory: Path,
-                   reward_token: str) -> dict[str, Any]:
-    name = ("test_metadata.json" if method == "alns"
-            else f"test_metadata_{reward_token}.json")
+def _test_metadata(
+    method: str, directory: Path, reward_token: str
+) -> dict[str, Any]:
+    name = (
+        "test_metadata.json"
+        if method == "alns"
+        else f"test_metadata_{reward_token}.json"
+    )
     path = directory / name
     return _read_json(path) if path.is_file() else {}
 
 
-def _legacy_selection_mode(method: str, directory: Path,
-                           reward_token: str,
-                           first: Mapping[str, str]) -> str:
+def _legacy_selection_mode(
+    method: str, directory: Path, reward_token: str, first: Mapping[str, str]
+) -> str:
     if method == "alns":
         return "roulette"
     instance_id = first.get("instance_id", "")
@@ -326,12 +406,20 @@ def _comparison_rows(now: str) -> dict[int, list[dict[str, Any]]]:
                 results = _read_csv(result_path)
                 if not results:
                     raise ValueError("test result is empty")
-                expected = (reward_token.removeprefix("reward_")
-                            if reward_token else None)
-                reward_mode = (_consistent_reward(results, result_path, expected)
-                               if method != "alns" else "")
-                pairs = [(item.get("instance_id", ""), item.get("seed", ""))
-                         for item in results]
+                expected = (
+                    reward_token.removeprefix("reward_")
+                    if reward_token
+                    else None
+                )
+                reward_mode = (
+                    _consistent_reward(results, result_path, expected)
+                    if method != "alns"
+                    else ""
+                )
+                pairs = [
+                    (item.get("instance_id", ""), item.get("seed", ""))
+                    for item in results
+                ]
                 if any(not instance or seed == "" for instance, seed in pairs):
                     raise ValueError("instance_id or seed is missing")
                 if len(set(pairs)) != len(pairs):
@@ -348,9 +436,15 @@ def _comparison_rows(now: str) -> dict[int, list[dict[str, Any]]]:
                 settings: dict[str, Any] = {}
                 if metadata:
                     _validate_metadata(
-                        metadata, result_path, method=method, size=size,
+                        metadata,
+                        result_path,
+                        method=method,
+                        size=size,
                         tag=tag,
-                        reward_mode=(reward_mode if method != "alns" else None))
+                        reward_mode=(
+                            reward_mode if method != "alns" else None
+                        ),
+                    )
                     recorded_at = str(metadata.get("completed_at") or now)
                     checkpoint = str(metadata.get("checkpoint") or "")
                     selection_mode = str(metadata.get("selection_mode") or "")
@@ -358,10 +452,12 @@ def _comparison_rows(now: str) -> dict[int, list[dict[str, Any]]]:
                 else:
                     recorded_at = _artifact_time(result_path)
                     selection_mode = _legacy_selection_mode(
-                        method, directory, reward_token, results[0])
+                        method, directory, reward_token, results[0]
+                    )
                     if method != "alns":
                         checkpoint_path = _checkpoint_path(
-                            method, tag, size, reward_token).resolve()
+                            method, tag, size, reward_token
+                        ).resolve()
                         checkpoint = str(checkpoint_path)
                         settings = _checkpoint_fields(checkpoint_path)
                 instances = {instance for instance, _ in pairs}
@@ -384,12 +480,25 @@ def _comparison_rows(now: str) -> dict[int, list[dict[str, Any]]]:
                     "runtime_s_max": round(max(runtimes), 3),
                     "checkpoint": checkpoint,
                 }
-                row.update({key: value for key, value in settings.items()
-                            if key not in row})
+                row.update(
+                    {
+                        key: value
+                        for key, value in settings.items()
+                        if key not in row
+                    }
+                )
                 by_size.setdefault(size, []).append(row)
-            except (KeyError, TypeError, ValueError, RuntimeError, OSError,
-                    json.JSONDecodeError) as exc:
-                print(f"  ! invalid test artifact skipped: {result_path}: {exc}")
+            except (
+                KeyError,
+                TypeError,
+                ValueError,
+                RuntimeError,
+                OSError,
+                json.JSONDecodeError,
+            ) as exc:
+                print(
+                    f"  ! invalid test artifact skipped: {result_path}: {exc}"
+                )
     return by_size
 
 
@@ -407,19 +516,31 @@ def _identity(row: Mapping[str, Any], value_fields: set[str]) -> str:
         text = "" if value is None else str(value)
         if text != "":
             settings[key] = text
-    return json.dumps(settings, ensure_ascii=False, sort_keys=True,
-                      default=str, separators=(",", ":"))
+    return json.dumps(
+        settings,
+        ensure_ascii=False,
+        sort_keys=True,
+        default=str,
+        separators=(",", ":"),
+    )
 
 
 def _model_rank(row: Mapping[str, Any]) -> int:
     """Sort key ordering rows by METHOD_ORDER; unknown models come last."""
     model = str(row.get("model", ""))
-    return (METHOD_ORDER.index(model) if model in METHOD_ORDER
-            else len(METHOD_ORDER))
+    return (
+        METHOD_ORDER.index(model)
+        if model in METHOD_ORDER
+        else len(METHOD_ORDER)
+    )
 
 
-def _merge_table(path: Path, rows: list[dict[str, Any]],
-                 head: tuple[str, ...], value_fields: set[str]) -> None:
+def _merge_table(
+    path: Path,
+    rows: list[dict[str, Any]],
+    head: tuple[str, ...],
+    value_fields: set[str],
+) -> None:
     """Update the same setting in place and append genuinely new settings.
 
     Rows are written grouped by model in METHOD_ORDER. The sort is stable,
@@ -456,32 +577,42 @@ def _merge_table(path: Path, rows: list[dict[str, Any]],
                 fieldnames.append(key)
 
     with path.open("w", newline="", encoding="utf-8") as file:
-        writer = csv.DictWriter(file, fieldnames=fieldnames, restval="",
-                                extrasaction="ignore")
+        writer = csv.DictWriter(
+            file, fieldnames=fieldnames, restval="", extrasaction="ignore"
+        )
         writer.writeheader()
         writer.writerows(sorted(existing, key=_model_rank))
-    print(f"{path}  ({added} new, {refreshed} refreshed, "
-          f"{len(existing)} total)")
+    print(
+        f"{path}  ({added} new, {refreshed} refreshed, {len(existing)} total)"
+    )
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Summarize output/ into cumulative per-size training and "
-                    "test comparison tables")
+        "test comparison tables"
+    )
     parser.add_argument(
-        "--size", type=int, choices=(5, 10, 20, 50, 100), action="append",
-        help="only summarize this size (repeatable; default: all found)")
+        "--size",
+        type=int,
+        choices=(5, 10, 20, 50, 100),
+        action="append",
+        help="only summarize this size (repeatable; default: all found)",
+    )
     args = parser.parse_args()
 
     now = datetime.now().astimezone().isoformat(timespec="seconds")
     training, seen_checkpoints = _training_rows(now)
     comparison = _comparison_rows(now)
     if MODELS_DIR.is_dir():
-        for checkpoint in sorted(path.resolve()
-                                 for path in MODELS_DIR.glob("*.pt")):
+        for checkpoint in sorted(
+            path.resolve() for path in MODELS_DIR.glob("*.pt")
+        ):
             if checkpoint not in seen_checkpoints:
-                print(f"  ! no training log for {checkpoint.name}; "
-                      "training time cannot be reported")
+                print(
+                    f"  ! no training log for {checkpoint.name}; "
+                    "training time cannot be reported"
+                )
 
     sizes = sorted(set(training) | set(comparison))
     if args.size is not None:
@@ -495,17 +626,26 @@ def main() -> None:
         if size in training:
             _merge_table(
                 OUTPUT_DIR / TRAINING_TABLE.format(size=size),
-                training[size], TRAINING_HEAD, _TRAINING_VALUE_FIELDS)
+                training[size],
+                TRAINING_HEAD,
+                _TRAINING_VALUE_FIELDS,
+            )
         if size in comparison:
             _merge_table(
                 OUTPUT_DIR / COMPARISON_TABLE.format(size=size),
-                comparison[size], COMPARISON_HEAD, _COMPARISON_VALUE_FIELDS)
+                comparison[size],
+                COMPARISON_HEAD,
+                _COMPARISON_VALUE_FIELDS,
+            )
             present = {row["model"] for row in comparison[size]}
-            missing = [method for method in COMPARED_METHODS
-                       if method not in present]
+            missing = [
+                method for method in COMPARED_METHODS if method not in present
+            ]
             if missing:
-                print(f"  ! n{size} comparison is incomplete; missing: "
-                      f"{', '.join(missing)}")
+                print(
+                    f"  ! n{size} comparison is incomplete; missing: "
+                    f"{', '.join(missing)}"
+                )
 
 
 if __name__ == "__main__":

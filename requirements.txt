@@ -1,13 +1,19 @@
-# shared by every method (instance loading, geometry, preprocessing, plots)
-matplotlib>=3.7
-numpy>=1.24
-PyYAML>=6.0
-pyproj>=3.6
-scipy>=1.10
+# Complete project environment. Install from the repository root with:
+#   python -m pip install -r requirements.txt
+#
+# The CUDA-enabled Windows wheel also supports --device cpu, so one Conda
+# environment is sufficient for ALNS, PPO-ALNS, and GNN-PPO-ALNS.
+--extra-index-url https://download.pytorch.org/whl/cu121
 
-# exact MILP solver (src/exact) only:
-gurobipy>=11.0
+torch==2.5.1+cu121; sys_platform == "win32"
+torch==2.5.1; sys_platform != "win32"
+torch-geometric==2.8.0.post1
+numpy==2.2.6
+scipy==1.15.3
+matplotlib==3.10.9
+PyYAML==6.0.3
+pyproj==3.7.1
+gurobipy==13.0.3
 
-# PPO-ALNS / GNN-PPO-ALNS (src/ppo_alns, src/gnn_ppo_alns) only:
-torch==2.13.0
-torch_geometric==2.8.0.post1
+# Install this repository's src-layout packages as editable modules.
+-e .
