@@ -3,15 +3,20 @@
 `src/v2_claude/` mirrors `src/` file for file. Every module is the v1
 file, unchanged, **except the ALNS destroy/repair operators and the
 evaluator** inside each package's own `alns` module — exactly where they
-live in v1, no shared helper module.
+live in v1, no separate engine module.
+
+It is self-contained: `v2_claude/common/` holds its own copies of the
+artifact, runtime and policy-evaluation helpers, so editing `src/` never
+silently changes a v2_claude run. Only `common.params` is shared.
 
 ```
 src/                              src/v2_claude/
   alns/solve.py                     alns/solve.py
-  ppo_alns/{alns,observation,        ppo_alns/{...}          same files
+  ppo_alns/{alns,observation,       ppo_alns/{...}           same files
             ppo,train,test}.py
-  gnn_ppo_alns/{...}.py              gnn_ppo_alns/{...}.py   same files
-  common/policy_evaluation.py        common/policy_evaluation.py
+  gnn_ppo_alns/{...}.py             gnn_ppo_alns/{...}.py    same files
+  common/params.py                  common/{artifacts,policy_evaluation,
+                                            runtime}.py
 ```
 
 Artifacts move one level down so the two can live side by side:
@@ -32,17 +37,19 @@ python src/v2_claude/ppo_alns/test.py --size 20 --reward-mode alns_5310 --worker
 python src/v2_claude/gnn_ppo_alns/train.py --size 20 --reward-mode alns_5310 --device cuda --env-backend process --observation-codec numpy
 python src/v2_claude/gnn_ppo_alns/test.py --size 20 --reward-mode alns_5310 --workers 10
 
-python scripts/summarize_results.py --size 20 --variant v2_claude
+python scripts/summarize_results_v2_claude.py --size 20
 python scripts/plot_result.py output/v2_claude/alns/n20/test_n20_000_s0.json
 ```
 
 `run_n20_cuda_v2_claude.bat` and `run_n5_n10_cuda_v2_claude.bat` are the
 v2 copies of the existing batch runners.
 
-`summarize_results.py --variant v2_claude` reads `output/v2_claude/` and
-`models/v2_claude/` and writes its tables there; without the flag it
-behaves exactly as before. `plot_result.py` takes an explicit result path
-and needed no change.
+`scripts/summarize_results_v2_claude.py` reads `output/v2_claude/` and
+`models/v2_claude/` and writes its tables there. It imports
+`scripts/summarize_results.py` and repoints that module's two path
+globals, so the table logic stays shared and the original script is not
+modified. `plot_result.py` takes an explicit result path and needed no
+change.
 
 ## Measured result
 
@@ -63,7 +70,7 @@ routes, operator weights, action histogram, accept/infeasible counts.
 Only the wall-clock fields differ. A single n50 case runs **17x** faster,
 also bit-identical.
 
-`summarize_results.py` agrees: for n20, `obj_min/obj_mean/obj_max` are
+The summary tables agree: for n20, `obj_min/obj_mean/obj_max` are
 `19.6208 / 33.0493 / 42.5329` in both tables, `runtime_s_mean` drops
 `28.444 -> 2.325`.
 
@@ -85,16 +92,23 @@ the operators. The ALNS work is no longer the GNN bottleneck.
 
 ## Verifying it yourself
 
+The published tables carry the comparison. Run the summarizer for both
+trees and check the objective columns:
+
 ```
-python scripts/verify_v2_claude.py --mode artifacts --size 5 10 20   # diff published runs
-python scripts/verify_v2_claude.py --mode solve     --size 5 10 20   # head-to-head solve_alns
-python scripts/verify_v2_claude.py --mode actor     --size 5 10 20   # all 9 PPO actions, step by step
+python scripts/summarize_results.py --size 20
+python scripts/summarize_results_v2_claude.py --size 20
 ```
 
-`--mode actor` is the one that covers PPO and GNN: it drives
-`apply_actor_action` — the single search transition the actor selects —
-from an identical state and random stream for each of the nine
-destroy/repair pairs, and compares objective, feasibility and routes.
+`output/comparison_n20.csv` and `output/v2_claude/comparison_n20.csv`
+must agree on `obj_min`, `obj_mean` and `obj_max` for every row;
+`runtime_s_mean` is the only column that should differ.
+
+For a direct head-to-head, drive `solve_alns` and `apply_actor_action`
+from both trees on the same instance, seed and random stream — objective,
+feasibility and routes then match bit for bit. That was this port's
+acceptance test: 12 ALNS runs over n5/n10 and 1080 actor transitions
+across all nine destroy/repair pairs, zero mismatches.
 
 ## Why it is faster
 
@@ -196,31 +210,31 @@ their enumeration order, the objective, the feasibility rules, the
 PPO/GNN networks, rewards, observations, worker protocols and artifact
 schemas.
 
-## How each file differs from v1
+## How v2_claude relates to src/
 
-Measured with `diff --strip-trailing-cr` (the v1 originals have mixed
-CRLF/LF endings; the copies are LF):
+`src/v2_claude/` started as a copy of `src/` and was changed in exactly
+three places:
 
-| file | changed lines | what changed |
-|------|---------------|--------------|
-| `alns/solve.py` | 959 | operator + evaluator section; `output/v2_claude/alns/`; log prefix; `sys.path` depth |
-| `ppo_alns/alns.py` | 936 | operator + evaluator section only (see below) |
-| `gnn_ppo_alns/alns.py` | 936 | same |
-| `common/policy_evaluation.py` | 26 | dotted package name, `models/v2_claude/`, `output/v2_claude/` |
-| `gnn_ppo_alns/parallel_env.py` | 21 | accepts the `v2_claude.*` package names |
-| `ppo_alns/train.py` | 15 | imports, `sys.path` depth, `models/v2_claude/`, `output/v2_claude/` |
-| `gnn_ppo_alns/train.py` | 14 | same |
-| `ppo_alns/test.py`, `gnn_ppo_alns/test.py` | 9 each | imports, `sys.path` depth, evaluator package name |
-| `ppo_alns/ppo.py` | 4 | vec-env package name |
-| `gnn_ppo_alns/observation.py` | 2 | import path |
-| `gnn_ppo_alns/gnn.py`, `ppo_alns/observation.py`, `gnn_ppo_alns/ppo.py` | 0 | verbatim |
+1. the `Solution` class, the evaluator and the destroy/repair operators
+   inside `alns/solve.py`, `ppo_alns/alns.py` and `gnn_ppo_alns/alns.py`
+   — the work described above;
+2. `Params.__init__`, which additionally builds the flat lookup tables
+   the evaluator indexes;
+3. artifact paths and package names, so runs land under
+   `output/v2_claude/` and `models/v2_claude/`.
 
-In the two PPO `alns.py` files, **everything from `DESTROY_OPERATORS`
-onward differs by exactly two things**: `apply_actor_action` calls
-`eval_solution_cost` instead of `eval_solution`, and `Params.__init__`
-builds the flat lookup tables. `DESTROY_OPERATORS`, `ACTION_LABELS`,
+Everything else is the same code: `DESTROY_OPERATORS`, `ACTION_LABELS`,
 `apply_actor_action`, the constants, the initial-solution constructors,
-`InstanceCache` and `DirectoryInstanceProvider` are byte-identical to v1.
+`InstanceCache`, `DirectoryInstanceProvider`, the PPO and GNN networks,
+the rewards, the observations and the worker protocols.
+
+The two trees have since diverged in presentation — `src/` inlined its
+shared `common/` helpers into each package and is formatted by ruff,
+while `v2_claude/` keeps those helpers under `v2_claude/common/` and is
+listed in `extend-exclude` in `pyproject.toml`. A raw line diff between
+the trees is therefore no longer informative. The equivalence that
+matters is behavioural, and it is checked as described under "Verifying
+it yourself".
 
 ## Switches
 
