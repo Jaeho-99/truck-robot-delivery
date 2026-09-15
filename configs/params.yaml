@@ -37,19 +37,19 @@ fleet:
 truck:
   speed_kmh: 27.0 # 한국교통연구원 https://viewt.ktdb.go.kr/cong/map/TableMove_Zeke.do 참고.
   capacity: 150 # 현대 포터2 공식 문서 참고. 화물실 부피 7.47 m³ / 1박스 0.05 m³ 기준으로 계산.
-  range_km: 480.0 # 현대 포터2 공식 문서 참고. 연료탱크 용량 65 L * 연비 8.6 km/L 기준으로 계산.
-  fixed_cost: 7.87 * 4.0 # 한국교통연구원 참고. 1시간 기준으로 4시간 운행 비용으로 계산. 
+  range_km: 550.0 # 현대 포터2 공식 문서 참고. 연료탱크 용량 65 L * 연비 8.6 km/L 기준으로 계산.
+  fixed_cost: 31.48 # 7.87 * 4.0. 한국교통연구원 참고. 1시간 기준으로 4시간 운행 비용으로 계산. 
   fuel_cost_per_min: 0.052 # 현대 포터2 공식 문서 + 한국교통연구원 참고. 평균 속도 27.0 km/h * 연비 (1/8.6 km/L) * 경유 단가 1$/L 기준으로 계산. -> 3.1395 $/h -> 0.052 $/min
   env_cost_per_min: 0.0185 # 현대 포터2 공식 문서 + Rennert(2022) 논문 참고. 평균 속도 27.0 km/h * CO2 배출량 222g/km -> ~ 6.0 kg/h -> 0.1 kg/min -> 0.0001 tCO2/min. 0.0001 tCO2/min * 185 $/tCO2 -> 0.0185 $/min
   service_time_min: 5.0 # 유선님 논문(2025) 참고.
 
 robot:
   speed_kmh: 6.0 # Starship Technology 문서 참고.
-  capacity: 5 # Starship Technology 문서 참고. 화물실 부피 0.435 m³ / 1박스 0.05 m³ 기준으로 계산. -> 8.7개 정도이지만, 안전하게 5개로 설정.
+  capacity: 3 # Starship Technology 문서 참고. 화물실 부피 0.0435 m³ / 1박스 0.015 m³ 기준으로 계산.
   range_km: 40.0 # Starship Technology 사이트 참고.
-  fixed_cost: 0.5 * 4.0 # Ostermeier(2025) 논문 참고. 1시간 기준으로 4시간 운행 비용으로 계산. 
+  fixed_cost: 2.0 # 0.5 * 4.0. Ostermeier(2025) 논문 참고. 1시간 기준으로 4시간 운행 비용으로 계산. 
   fuel_cost_per_min: 0.00017 # Starship Technology 문서 + 한국전력공사 참고. 배터리 용량 1.26kWh / 사용 시간 12h / 60 min -> 0.00175 kWh/min. 0.00175kWh/min * 150원/kWh / (1500 원/$) -> 0.000175 $/min.
-  env_cost_per_min: 0.00032 # Starship Technology 문서 + Kirschstein(2020) 논문 참고. 배터리 용량 1.26kWh / 사용 시간 12h / 60 min -> 0.00175 kWh/min. 0.00175kWh/min * CO2 배출량 0.001 tCO2/kWh -> 0.00000175 tCO2/min * 185 $/tCO2 -> 0.00032375 $/min.
+  env_cost_per_min: 0.00016 # Starship Technology 문서 + Kirschstein(2020) 논문 참고. 배터리 용량 1.26kWh / 사용 시간 12h / 60 min -> 0.00175 kWh/min. 0.00175kWh/min * CO2 배출량 0.0005 tCO2/kWh -> 0.000000875 tCO2/min * 185 $/tCO2 -> 0.000161875 $/min.
   service_time_min: 1.0 # 유선님 논문(2025) 참고.
   unload_time_min: 1.0 # 유선님 논문(2025) 참고.
   load_time_min: 0.5 # 유선님 논문(2025) 참고.
