@@ -1,17 +1,25 @@
-# experiment outputs (directory structure kept via .gitkeep)
-results/*
-!results/.gitkeep
+# Private data and experiment artifacts remain on each machine.
+/data/
+/models/
+/output/
+/logs/
+/logs_n*/
+*.lock
+*.log
 
-# python
+# Python environments, caches and build output.
 __pycache__/
-*.pyc
+*.py[cod]
 *.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+build/
+dist/
 
-# solver
-gurobi.log
-
-# os
+# Local editor and OS files.
+.vscode/
+.idea/
 .DS_Store
-
-# temporary learning/debug scripts
-temp_*
+Thumbs.db

@@ -1,0 +1,50 @@
+version: "v1.0"
+
+# Changing geometry or either speed requires preprocessing again.
+geometry:
+  metric: manhattan
+  scaling_factor: 1.0
+  path_convention: average
+  n_samples: 100
+
+# Truck count is resolved from the required experiment size.
+fleet:
+  n_trucks:
+    5: 2
+    10: 2
+    20: 2
+    50: 4
+    100: 7
+    150: 10
+    200: 12
+    250: 15
+    300: 17
+  n_robots_per_truck: 2
+
+truck:
+  speed_kmh: 20.0
+  capacity: 100
+  range_km: 480.0
+  fixed_cost: 7.87
+  fuel_cost_per_min: 0.063
+  env_cost_per_min: 0.035
+  service_time_min: 5.0
+
+robot:
+  speed_kmh: 5.0
+  capacity: 3
+  range_km: 40.0
+  fixed_cost: 3.7
+  fuel_cost_per_min: 0.00025
+  env_cost_per_min: 0.00016
+  service_time_min: 1.0
+  unload_time_min: 1.0
+  load_time_min: 0.5
+
+lateness:
+  cost_per_min: 0.0958
+
+demand_per_customer: 1
+
+time_window:
+  hours: 4.0
