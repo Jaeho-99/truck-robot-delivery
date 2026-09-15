@@ -52,6 +52,7 @@ if __package__ in (None, ""):
 from common.params import DEFAULT_PARAMS_PATH, REPO_ROOT, load_problem
 from common.params import Instance as ProcessedInstance
 from common.params import Params as SharedParams
+from common.sizes import SUPPORTED_SIZES
 
 STATUS_LOOKUP = {
     GRB.OPTIMAL: "OPTIMAL",
@@ -879,7 +880,9 @@ def _parser():
     parser = argparse.ArgumentParser(
         description="Solve precomputed test instances with the exact MILP"
     )
-    parser.add_argument("--size", type=int, choices=(5, 10), required=True)
+    parser.add_argument(
+        "--size", type=int, choices=SUPPORTED_SIZES, required=True
+    )
     parser.add_argument("--params", type=Path, default=DEFAULT_PARAMS_PATH)
     parser.add_argument("--tag", type=_tag)
     parser.add_argument(

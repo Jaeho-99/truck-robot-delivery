@@ -18,6 +18,11 @@ Models consume the resulting matrices and never recompute geometry.
 Example from the repository root::
 
     python scripts/preprocess.py --split all --size 5
+    python scripts/preprocess.py --split all --size 200
+
+``--size all`` processes the supported sizes whose raw directories exist
+in each selected split. An explicitly requested size must exist in every
+selected split. Geometry does not depend on the solver's fleet size table.
 
 Processing follows validation -> zone decomposition -> matrix building
 -> validation -> atomic NPZ publication. Existing compatible data is
@@ -46,7 +51,7 @@ from scipy.spatial import cKDTree
 
 if __package__ in (None, ""):
     # Keep direct execution usable without an editable package installation.
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from common.params import (
     CELL_COORD_PATH,
@@ -60,10 +65,12 @@ from common.params import (
     preproc_signature,
     zone_source_info,
 )
+from common.sizes import SUPPORTED_SIZES
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 RAW_ROOT = REPO_ROOT / "data" / "raw"
-SIZES = (5, 10, 20, 50, 100)
+# Preprocessing sizes are independent of solver fleet configurations.
+SIZES = SUPPORTED_SIZES
 SPLITS = ("train", "test")
 TAG_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\Z")
 
@@ -1037,7 +1044,10 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--split", choices=(*SPLITS, "all"), default="all")
     parser.add_argument(
-        "--size", choices=("5", "10", "20", "50", "100", "all"), default="all"
+        "--size",
+        choices=(*(str(size) for size in SIZES), "all"),
+        default="all",
+        help="customer count, or all sizes with existing raw directories",
     )
     parser.add_argument("--params", type=Path, default=DEFAULT_PARAMS_PATH)
     parser.add_argument("--tag", type=_tag)
@@ -1055,6 +1065,33 @@ def main() -> None:
         / "data"
         / ("processed" if args.tag is None else f"processed_{args.tag}")
     )
+
+    # Validate inputs before expensive geometry setup or writing any output.
+    # For example, --size 200 --split test requires data/raw/test/n200.
+    batches: list[tuple[str, int, list[Path]]] = []
+    for split in selected_splits:
+        split_batches = []
+        for size in selected_sizes:
+            source_dir = RAW_ROOT / split / f"n{size}"
+            if not source_dir.is_dir():
+                if args.size == "all":
+                    print(f"[skip] raw directory absent: {source_dir}")
+                    continue
+                raise FileNotFoundError(
+                    f"raw instance directory not found: {source_dir}"
+                )
+            raw_paths = sorted(source_dir.glob("*.json"))
+            if not raw_paths:
+                raise FileNotFoundError(
+                    f"no JSON instances under {source_dir}"
+                )
+            split_batches.append((split, size, raw_paths))
+        if not split_batches:
+            raise FileNotFoundError(
+                "no supported raw instance directories under "
+                f"{RAW_ROOT / split}"
+            )
+        batches.extend(split_batches)
 
     cell_table = _load_cell_table(CELL_COORD_PATH)
     zone_method, zone_source_hash = zone_source_info()
@@ -1087,40 +1124,29 @@ def main() -> None:
     checked_nodes = 0
     mismatched_nodes = 0
     locator_cache: dict[tuple[Any, ...], _ZoneLocator] = {}
-    for split in selected_splits:
-        for size in selected_sizes:
-            source_dir = RAW_ROOT / split / f"n{size}"
-            if not source_dir.is_dir():
-                raise FileNotFoundError(
-                    f"raw instance directory not found: {source_dir}"
-                )
-            raw_paths = sorted(source_dir.glob("*.json"))
-            if not raw_paths:
-                raise FileNotFoundError(
-                    f"no JSON instances under {source_dir}"
-                )
-            output_dir = output_root / split / f"n{size}"
-            for raw_path in raw_paths:
-                output_path = output_dir / f"{raw_path.stem}.npz"
-                status, mismatches, node_count = _process_one(
-                    raw_path,
-                    output_path,
-                    size,
-                    params,
-                    polygon_groups,
-                    cell_table,
-                    locator_cache,
-                    git_commit,
-                    zone_source_hash,
-                    args.force,
-                )
-                if status == "skipped":
-                    skipped += 1
-                else:
-                    written += 1
-                    checked_nodes += node_count
-                    mismatched_nodes += mismatches
-                    print(f"[written] {output_path.relative_to(REPO_ROOT)}")
+    for split, size, raw_paths in batches:
+        output_dir = output_root / split / f"n{size}"
+        for raw_path in raw_paths:
+            output_path = output_dir / f"{raw_path.stem}.npz"
+            status, mismatches, node_count = _process_one(
+                raw_path,
+                output_path,
+                size,
+                params,
+                polygon_groups,
+                cell_table,
+                locator_cache,
+                git_commit,
+                zone_source_hash,
+                args.force,
+            )
+            if status == "skipped":
+                skipped += 1
+            else:
+                written += 1
+                checked_nodes += node_count
+                mismatched_nodes += mismatches
+                print(f"[written] {output_path.relative_to(REPO_ROOT)}")
     if checked_nodes:
         print(
             "[zone-check] raw node.zone vs active assignment: "

@@ -1,19 +1,14 @@
-# Complete project environment. Install from the repository root with:
-#   python -m pip install -r requirements.txt
-#
-# The CUDA-enabled Windows wheel also supports --device cpu, so one Conda
-# environment is sufficient for ALNS, PPO-ALNS, and GNN-PPO-ALNS.
+# Install in an activated Conda environment with Python 3.10-3.12.
+# Windows: CPU/CUDA + GNN. Linux: CPU-only ALNS/PPO and exact solver.
+--extra-index-url https://download.pytorch.org/whl/cpu
 --extra-index-url https://download.pytorch.org/whl/cu121
 
 torch==2.5.1+cu121; sys_platform == "win32"
-torch==2.5.1; sys_platform != "win32"
-torch-geometric==2.8.0.post1
+torch==2.5.1+cpu; sys_platform == "linux"
+torch-geometric==2.8.0.post1; sys_platform == "win32"
 numpy==2.2.6
 scipy==1.15.3
 matplotlib==3.10.9
 PyYAML==6.0.3
 pyproj==3.7.1
 gurobipy==13.0.3
-
-# Install this repository's src-layout packages as editable modules.
--e .

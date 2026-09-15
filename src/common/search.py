@@ -1,28 +1,24 @@
-"""Combinatorial search mechanics for GNN-PPO-ALNS (v2_claude).
+"""Shared optimized ALNS mechanics, problem adapters, and instance loading.
 
-Identical to ``src/gnn_ppo_alns/alns.py`` apart from the
-destroy/repair operators and the evaluator, which search the same
-candidate space with far less work per candidate.
-
-This module deliberately contains no standalone operator selector or search
-driver. The graph-conditioned PPO actor in :mod:`gnn_ppo_alns.ppo` selects
-one of the nine joint destroy/repair actions and calls
-:func:`apply_actor_action` for exactly one search transition. Geometry and
-travel coefficients are loaded from the preprocessed instance and are never
-reconstructed here; node coordinates are retained only for graph features.
+All three algorithms use this module; it imports neither Torch nor PyG.
 """
 
-from collections import defaultdict
 import math
-from pathlib import Path
 import random
 import re
+from collections import defaultdict
+from pathlib import Path
 
 import numpy as np
 
+from common.params import (
+    DEFAULT_PARAMS_PATH,
+    REPO_ROOT,
+    load_params,
+    load_problem,
+)
 from common.params import Instance as ProcessedInstance
 from common.params import Params as SharedParams
-from common.params import DEFAULT_PARAMS_PATH, REPO_ROOT, load_params, load_problem
 
 
 def _copy_route(route):
@@ -36,11 +32,20 @@ def _copy_route(route):
         if st["kind"] == "cust":
             out.append({"kind": "cust", "c": st["c"]})
         else:
-            out.append({"kind": "park", "p": st["p"],
-                        "deploys": [{"r": tr["r"],
-                                     "custs": list(tr["custs"]),
-                                     "ret_p": tr["ret_p"]}
-                                    for tr in st["deploys"]]})
+            out.append(
+                {
+                    "kind": "park",
+                    "p": st["p"],
+                    "deploys": [
+                        {
+                            "r": tr["r"],
+                            "custs": list(tr["custs"]),
+                            "ret_p": tr["ret_p"],
+                        }
+                        for tr in st["deploys"]
+                    ],
+                }
+            )
     return out
 
 
@@ -74,14 +79,22 @@ class Solution:
         return out
 
 
-# Evaluator state, snapshotted before each stop so an insertion
-# candidate can resume where it starts to differ from the base route:
-#   (prev, b_prev, truck_travel, robot_travel, truck_dist, lateness_sum,
-#    parcels, robots_used_mask, feasible, aboard, robot_dist, pending)
 def _initial_state(pr):
     width = pr.n_robots + 1
-    return (0, 0.0, 0.0, 0.0, 0.0, 0.0, 0, 0, True,
-            (True,) * width, (0.0,) * width, ())
+    return (
+        0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0,
+        0,
+        True,
+        (True,) * width,
+        (0.0,) * width,
+        (),
+    )
 
 
 def _run(pr, k, route, start, state, snapshots=None):
@@ -100,8 +113,20 @@ def _run(pr, k, route, start, state, snapshots=None):
       * ``start``/``state`` let a candidate skip the prefix it shares
         with the base route (see :func:`_prefix_states`).
     """
-    (prev, b_prev, truck_travel, robot_travel, truck_dist, late_sum,
-     parcels, rused, feasible, aboard_t, rdist_t, pending_t) = state
+    (
+        prev,
+        b_prev,
+        truck_travel,
+        robot_travel,
+        truck_dist,
+        late_sum,
+        parcels,
+        rused,
+        feasible,
+        aboard_t,
+        rdist_t,
+        pending_t,
+    ) = state
     aboard = list(aboard_t)
     rdist = list(rdist_t)
     pending = {node: list(pairs) for node, pairs in pending_t}
@@ -116,10 +141,21 @@ def _run(pr, k, route, start, state, snapshots=None):
     for si in range(start, len(route)):
         if snapshots is not None:
             snapshots.append(
-                (prev, b_prev, truck_travel, robot_travel, truck_dist,
-                 late_sum, parcels, rused, feasible, tuple(aboard),
-                 tuple(rdist),
-                 tuple((nd, tuple(v)) for nd, v in pending.items())))
+                (
+                    prev,
+                    b_prev,
+                    truck_travel,
+                    robot_travel,
+                    truck_dist,
+                    late_sum,
+                    parcels,
+                    rused,
+                    feasible,
+                    tuple(aboard),
+                    tuple(rdist),
+                    tuple((nd, tuple(v)) for nd, v in pending.items()),
+                )
+            )
         st = route[si]
         if st["kind"] == "cust":
             node = st["c"]
@@ -146,14 +182,14 @@ def _run(pr, k, route, start, state, snapshots=None):
                     r = tr["r"]
                     custs = tr["custs"]
                     ret_p = tr["ret_p"]
-                    if not aboard[r]:          # no re-deploy while away
+                    if not aboard[r]:  # no re-deploy while away
                         feasible = False
                     aboard[r] = False
                     rused |= 1 << r
                     n_custs = len(custs)
                     if n_custs == 0 or n_custs > beta_robot or ret_p == node:
                         feasible = False
-                    t = a_node + zeta_unload   # (32) deploy departure
+                    t = a_node + zeta_unload  # (32) deploy departure
                     rprev = node
                     acc = rdist[r]
                     for c in custs:
@@ -184,21 +220,32 @@ def _run(pr, k, route, start, state, snapshots=None):
             # --- retrieves at this stop ---
             arrivals = pending.pop(node, None)
             if arrivals is not None:
-                for (r, arr) in arrivals:
+                for r, arr in arrivals:
                     if aboard[r]:
                         feasible = False
                     aboard[r] = True
-                    ready = arr + zeta_load    # (34) truck waits
+                    ready = arr + zeta_load  # (34) truck waits
                     if ready > b_node:
                         b_node = ready
         prev, b_prev = node, b_node
 
     if snapshots is not None:
         snapshots.append(
-            (prev, b_prev, truck_travel, robot_travel, truck_dist,
-             late_sum, parcels, rused, feasible, tuple(aboard),
-             tuple(rdist),
-             tuple((nd, tuple(v)) for nd, v in pending.items())))
+            (
+                prev,
+                b_prev,
+                truck_travel,
+                robot_travel,
+                truck_dist,
+                late_sum,
+                parcels,
+                rused,
+                feasible,
+                tuple(aboard),
+                tuple(rdist),
+                tuple((nd, tuple(v)) for nd, v in pending.items()),
+            )
+        )
 
     # return to depot
     D = pr.D
@@ -223,10 +270,13 @@ def _run(pr, k, route, start, state, snapshots=None):
     if parcels > pr.beta_truck + 1e-6:
         feasible = False
 
-    cost = (pr.gamma_fixed                                # truck fixed
-            + rused.bit_count() * pr.gammahat_fixed       # robot fixed
-            + truck_travel + robot_travel                 # travel
-            + pr.gamma_late * late_sum)                   # lateness
+    cost = (
+        pr.gamma_fixed  # truck fixed
+        + rused.bit_count() * pr.gammahat_fixed  # robot fixed
+        + truck_travel
+        + robot_travel  # travel
+        + pr.gamma_late * late_sum
+    )  # lateness
     return cost, feasible
 
 
@@ -278,13 +328,13 @@ def eval_truck(pr, k, route):
     lam, lcv = pr.lam_arr, pr.lc_arr
     truck_travel = robot_travel = truck_dist = 0.0
     lateness = {}
-    robot_dist = defaultdict(float)   # accumulated robot distance (51)
+    robot_dist = defaultdict(float)  # accumulated robot distance (51)
     parcels = 0
     feasible = True
     aboard = {r: True for r in pr.R_k[k]}
-    pending = {}            # ret_p copy -> [(r, robot arrival), ...]
+    pending = {}  # ret_p copy -> [(r, robot arrival), ...]
     robots_used = set()
-    prev, b_prev = 0, 0.0             # leave depot-out at minute 0
+    prev, b_prev = 0, 0.0  # leave depot-out at minute 0
     for st in route:
         node = st["c"] if st["kind"] == "cust" else st["p"]
         leg = ttl[prev][node]
@@ -303,17 +353,17 @@ def eval_truck(pr, k, route):
             #     w = 1) ---
             for tr in st["deploys"]:
                 r, custs, ret_p = tr["r"], tr["custs"], tr["ret_p"]
-                if not aboard.get(r, False):   # no re-deploy while away
+                if not aboard.get(r, False):  # no re-deploy while away
                     feasible = False
                 aboard[r] = False
                 robots_used.add(r)
                 # empty trip / capacity (44)
                 if not custs or len(custs) > pr.beta_robot:
                     feasible = False
-                if ret_p == p:      # same-copy retrieval banned (24)(25)
+                if ret_p == p:  # same-copy retrieval banned (24)(25)
                     feasible = False
                 parcels += sum(lam[c] for c in custs)
-                t = a_node + pr.zeta_unload    # (32) deploy departure
+                t = a_node + pr.zeta_unload  # (32) deploy departure
                 rprev = p
                 for c in custs:
                     leg_r = trl[rprev][c]
@@ -324,7 +374,7 @@ def eval_truck(pr, k, route):
                     t = ahat_c + pr.s_hat
                     rprev = c
                 leg_r = trl[rprev][ret_p]
-                arr_ret = t + leg_r            # arrival at retrieval
+                arr_ret = t + leg_r  # arrival at retrieval
                 robot_travel += leg_r * pr.robot_arc_coef
                 robot_dist[r] += dl[rprev][ret_p]
                 pending.setdefault(ret_p, []).append((r, arr_ret))
@@ -333,7 +383,7 @@ def eval_truck(pr, k, route):
                 # (a + zeta_unload).
                 b_node = max(b_node, a_node + pr.zeta_unload)
             # --- retrieves at this stop ((25) needs w = 0) ---
-            for (r, arr) in pending.pop(p, []):
+            for r, arr in pending.pop(p, []):
                 if aboard.get(r, False):
                     feasible = False
                 aboard[r] = True
@@ -357,10 +407,13 @@ def eval_truck(pr, k, route):
     if parcels > pr.beta_truck + 1e-6:
         feasible = False
 
-    cost = (pr.gamma_fixed                                # truck fixed
-            + len(robots_used) * pr.gammahat_fixed        # robot fixed
-            + truck_travel + robot_travel                 # travel
-            + pr.gamma_late * sum(lateness.values()))     # lateness
+    cost = (
+        pr.gamma_fixed  # truck fixed
+        + len(robots_used) * pr.gammahat_fixed  # robot fixed
+        + truck_travel
+        + robot_travel  # travel
+        + pr.gamma_late * sum(lateness.values())
+    )  # lateness
     return cost, feasible, lateness, dict(robot_dist)
 
 
@@ -389,8 +442,13 @@ def eval_solution(pr, sol):
     """
     total = 0.0
     feasible = sol.customers() == pr.C_set
-    brk = dict(truck_fixed=0.0, robot_fixed=0.0, truck_travel=0.0,
-               robot_travel=0.0, lateness=0.0)
+    brk = dict(
+        truck_fixed=0.0,
+        robot_fixed=0.0,
+        truck_travel=0.0,
+        robot_travel=0.0,
+        lateness=0.0,
+    )
     per_truck = {}
     for k, route in sol.routes.items():
         cost, ok, late, _ = eval_truck(pr, k, route)
@@ -399,9 +457,12 @@ def eval_solution(pr, sol):
         feasible = feasible and ok
         if route:
             brk["truck_fixed"] += pr.gamma_fixed
-            robots_used = {tr["r"] for st in route
-                           if st["kind"] == "park"
-                           for tr in st["deploys"]}
+            robots_used = {
+                tr["r"]
+                for st in route
+                if st["kind"] == "park"
+                for tr in st["deploys"]
+            }
             brk["robot_fixed"] += len(robots_used) * pr.gammahat_fixed
             brk["lateness"] += pr.gamma_late * sum(late.values())
     # Travel-cost breakdown (recomputed so it matches the total).
@@ -424,41 +485,40 @@ def eval_solution(pr, sol):
         brk["truck_travel"] += tt
         brk["robot_travel"] += rt
     return total, feasible, brk, per_truck
+
+
 __all__ = [
-    "ACTION_COUNT", "ACTION_LABELS", "DOD", "NOISE_FRAC", "W_START",
-    "DirectoryInstanceProvider", "Params", "Solution",
-    "apply_actor_action", "congestion_aware_initial", "eval_solution",
+    "ACTION_COUNT",
+    "ACTION_LABELS",
+    "DOD",
+    "NOISE_FRAC",
+    "W_START",
+    "DirectoryInstanceProvider",
+    "Params",
+    "Solution",
+    "apply_actor_action",
+    "congestion_aware_initial",
+    "eval_solution",
 ]
 
-
 # ---- caps on trip-insertion candidates (combinatorial control) ----
-L_RET_EXIST = 3   # existing later parking stops tried as retrieval
-W_RET_NEW = 4     # positions after the deploy tried for a new stop
-N_PHYS_NEAR = 2   # nearest physical locations tried for a new stop
-
-# Reuse the per-(customer, truck) best insertion across repair rounds.
-# Never applied to the noise operator, whose per-candidate draws would
-# otherwise stop being redrawn every round.
-INSERTION_CACHE = True
-
-# Enumerate only the robots already deployed on a route plus the
-# lowest-index idle one (robots are homogeneous, so the rest are
-# duplicates of exactly the same cost).
-ROBOT_SYMMETRY = True
-
-# The noise operator draws one U(-noise, noise) per *candidate*, so
-# dropping duplicate candidates shifts its random stream even though
-# every dropped candidate was a cost-identical duplicate. With this flag
-# set, the symmetry reduction is skipped there and the whole search
-# reproduces the reference implementation bit for bit; clear it to trade
-# that guarantee for roughly a further 1.5x on noise iterations.
-EXACT_NOISE_STREAM = True
+L_RET_EXIST = 3  # existing later parking stops tried as retrieval
+W_RET_NEW = 4  # positions after the deploy tried for a new stop
+N_PHYS_NEAR = 2  # nearest physical locations tried for a new stop
 
 
 # ============================================================
 # Insertion-candidate enumeration (modes A/B/C/D — shared by
 # greedy and regret repair)
 # ============================================================
+# Reuse insertion candidates between repair rounds. Noise keeps its RNG stream.
+INSERTION_CACHE = True
+# Equivalent idle robots need only one representative.
+ROBOT_SYMMETRY = True
+# Retain duplicate candidates for noisy repair to preserve per-candidate draws.
+EXACT_NOISE_STREAM = True
+
+
 def _with_new_trip(route, si, st, trip):
     """Copy-on-write: route with ``trip`` appended at stop index si."""
     new_st = dict(st)
@@ -480,8 +540,9 @@ def _robots_for(pr, k, route, reduce_robots=True):
     fleet = pr.R_k[k]
     if not (ROBOT_SYMMETRY and reduce_robots):
         return fleet
-    deployed = {tr["r"] for st in route if st["kind"] == "park"
-                for tr in st["deploys"]}
+    deployed = {
+        tr["r"] for st in route if st["kind"] == "park" for tr in st["deploys"]
+    }
     if not deployed:
         return fleet[:1]
     out = []
@@ -540,8 +601,9 @@ def _custody_profile(pr, k, route):
         nxt = n
         for i in range(n - 1, -1, -1):
             st = route[i]
-            if st["kind"] == "park" and any(tr["r"] == r
-                                            for tr in st["deploys"]):
+            if st["kind"] == "park" and any(
+                tr["r"] == r for tr in st["deploys"]
+            ):
                 nxt = i
             column[i] = nxt
         next_deploy[r] = column
@@ -584,11 +646,11 @@ def enum_insertions_truck(pr, route, c, k, used, robots, custody):
     """
     # --- A. direct truck visit ---
     for pos in range(len(route) + 1):
-        yield (route[:pos] + [{"kind": "cust", "c": c}] + route[pos:],
-               pos, ())
+        yield (route[:pos] + [{"kind": "cust", "c": c}] + route[pos:], pos, ())
 
-    park_pos = [(si, st) for si, st in enumerate(route)
-                if st["kind"] == "park"]
+    park_pos = [
+        (si, st) for si, st in enumerate(route) if st["kind"] == "park"
+    ]
 
     # --- B. insertion into an existing trip ---
     for si, st in park_pos:
@@ -612,45 +674,53 @@ def enum_insertions_truck(pr, route, c, k, used, robots, custody):
     for si, st in park_pos:
         for r in robots:
             if not aboard_after[si] & (1 << r):
-                continue                  # robot is away at this stop
-            after_si = next_deploy[r][si + 1]   # base re-deploy of r
+                continue  # robot is away at this stop
+            after_si = next_deploy[r][si + 1]  # base re-deploy of r
             # ret 1) later existing parking stops (L_RET_EXIST max)
-            for sj, st2 in [pp for pp in park_pos
-                            if pp[0] > si][:L_RET_EXIST]:
-                if after_si <= sj:        # re-deployed before retrieval
+            for sj, st2 in [pp for pp in park_pos if pp[0] > si][:L_RET_EXIST]:
+                if after_si <= sj:  # re-deployed before retrieval
                     continue
-                yield (_with_new_trip(route, si, st,
-                                      {"r": r, "custs": [c],
-                                       "ret_p": st2["p"]}),
-                       si, ())
+                yield (
+                    _with_new_trip(
+                        route,
+                        si,
+                        st,
+                        {"r": r, "custs": [c], "ret_p": st2["p"]},
+                    ),
+                    si,
+                    (),
+                )
             # ret 2) fresh copy at the same location right behind
             #        (waiting style, consumes two copies)
             grp = pr.park_groups[pr.copy_to_phys[st["p"]]]
             free = [cp for cp in grp if cp not in used]
             if free:
-                nr = _with_new_trip(route, si, st,
-                                    {"r": r, "custs": [c],
-                                     "ret_p": free[0]})
-                nr.insert(si + 1, {"kind": "park", "p": free[0],
-                                   "deploys": []})
+                nr = _with_new_trip(
+                    route, si, st, {"r": r, "custs": [c], "ret_p": free[0]}
+                )
+                nr.insert(
+                    si + 1, {"kind": "park", "p": free[0], "deploys": []}
+                )
                 yield nr, si, (free[0],)
             # ret 3) fresh copy at a location near c, inserted within
             #        W positions after the deploy
             for gi in pr.phys_near[c][:N_PHYS_NEAR]:
                 grp2 = pr.park_groups[gi]
-                free2 = [cp for cp in grp2
-                         if cp not in used and cp != st["p"]]
+                free2 = [cp for cp in grp2 if cp not in used and cp != st["p"]]
                 if not free2:
                     continue
-                for pos in range(si + 1,
-                                 min(n_stops, si + W_RET_NEW) + 1):
-                    if after_si < pos:    # re-deployed before retrieval
+                for pos in range(si + 1, min(n_stops, si + W_RET_NEW) + 1):
+                    if after_si < pos:  # re-deployed before retrieval
                         continue
-                    nr = _with_new_trip(route, si, st,
-                                        {"r": r, "custs": [c],
-                                         "ret_p": free2[0]})
-                    nr.insert(pos, {"kind": "park", "p": free2[0],
-                                    "deploys": []})
+                    nr = _with_new_trip(
+                        route,
+                        si,
+                        st,
+                        {"r": r, "custs": [c], "ret_p": free2[0]},
+                    )
+                    nr.insert(
+                        pos, {"kind": "park", "p": free2[0], "deploys": []}
+                    )
                     yield nr, si, (free2[0],)
 
     # --- D. new deploy stop plus new trip ---
@@ -665,27 +735,43 @@ def enum_insertions_truck(pr, route, c, k, used, robots, custody):
             column = next_deploy[r]
             for pos in range(n_stops + 1):
                 if not aboard_arr[pos] & bit:
-                    continue              # robot is away at this point
+                    continue  # robot is away at this point
                 # ret a) second copy of the same location (waiting)
                 if len(free) >= 2:
                     nr = list(route)
-                    nr.insert(pos, {"kind": "park", "p": dep_cp,
-                                    "deploys": [{"r": r, "custs": [c],
-                                                 "ret_p": free[1]}]})
-                    nr.insert(pos + 1, {"kind": "park", "p": free[1],
-                                        "deploys": []})
+                    nr.insert(
+                        pos,
+                        {
+                            "kind": "park",
+                            "p": dep_cp,
+                            "deploys": [
+                                {"r": r, "custs": [c], "ret_p": free[1]}
+                            ],
+                        },
+                    )
+                    nr.insert(
+                        pos + 1, {"kind": "park", "p": free[1], "deploys": []}
+                    )
                     yield nr, pos, (dep_cp, free[1])
                 # ret b) later existing parking stops
                 after_pos = column[pos]
-                later = [(si2, st2) for si2, st2 in park_pos
-                         if si2 >= pos][:L_RET_EXIST]
+                later = [(si2, st2) for si2, st2 in park_pos if si2 >= pos][
+                    :L_RET_EXIST
+                ]
                 for si2, st2 in later:
                     if after_pos <= si2:  # re-deployed before retrieval
                         continue
                     nr = list(route)
-                    nr.insert(pos, {"kind": "park", "p": dep_cp,
-                                    "deploys": [{"r": r, "custs": [c],
-                                                 "ret_p": st2["p"]}]})
+                    nr.insert(
+                        pos,
+                        {
+                            "kind": "park",
+                            "p": dep_cp,
+                            "deploys": [
+                                {"r": r, "custs": [c], "ret_p": st2["p"]}
+                            ],
+                        },
+                    )
                     yield nr, pos, (dep_cp,)
 
 
@@ -700,8 +786,14 @@ def enum_insertions(pr, sol, c):
     for k in pr.K:
         route = sol.routes[k]
         for nr, _si, _copies in enum_insertions_truck(
-                pr, route, c, k, used, _robots_for(pr, k, route),
-                _custody_profile(pr, k, route)):
+            pr,
+            route,
+            c,
+            k,
+            used,
+            _robots_for(pr, k, route),
+            _custody_profile(pr, k, route),
+        ):
             yield k, nr
 
 
@@ -734,7 +826,7 @@ class _RepairContext:
         self.prefix = {}
         self.robots = {}
         self.custody = {}
-        self.cache = {}        # (c, k) -> (delta, new_route, claimed)
+        self.cache = {}  # (c, k) -> (delta, new_route, claimed)
         for k in pr.K:
             self._refresh(k)
 
@@ -760,8 +852,8 @@ class _RepairContext:
         base_k = self.base[k]
         best_delta, best_route, best_claim = math.inf, None, ()
         for nr, si, claimed in enum_insertions_truck(
-                pr, route, c, k, self.used, self.robots[k],
-                self.custody[k]):
+            pr, route, c, k, self.used, self.robots[k], self.custody[k]
+        ):
             cost, ok = _run(pr, k, nr, si, prefix[si])
             if not ok:
                 continue
@@ -770,8 +862,11 @@ class _RepairContext:
                 delta += rng.uniform(-noise, noise)
             if delta < best_delta - 1e-9:
                 best_delta, best_route, best_claim = delta, nr, claimed
-        found = (None if best_route is None
-                 else (best_delta, best_route, best_claim))
+        found = (
+            None
+            if best_route is None
+            else (best_delta, best_route, best_claim)
+        )
         if self.use_cache:
             self.cache[(c, k)] = found
         return found
@@ -800,9 +895,12 @@ class _RepairContext:
         self.sol.routes[k] = new_route
         if self.use_cache:
             taken = set(claimed)
-            stale = [key for key, entry in self.cache.items()
-                     if key[1] == k
-                     or (entry is not None and taken.intersection(entry[2]))]
+            stale = [
+                key
+                for key, entry in self.cache.items()
+                if key[1] == k
+                or (entry is not None and taken.intersection(entry[2]))
+            ]
             for key in stale:
                 del self.cache[key]
         self.used = self.sol.used_copies()
@@ -819,8 +917,12 @@ def best_insertion(pr, sol, c, rng=None, noise=0.0):
     occasionally, allowing escapes from truck-only local optima.
     """
     noisy = noise > 0.0 and rng is not None
-    ctx = _RepairContext(pr, sol, use_cache=False,
-                         reduce_robots=not (noisy and EXACT_NOISE_STREAM))
+    ctx = _RepairContext(
+        pr,
+        sol,
+        use_cache=False,
+        reduce_robots=not (noisy and EXACT_NOISE_STREAM),
+    )
     found = ctx.best(c, rng, noise)
     if found is None:
         return math.inf, None
@@ -844,11 +946,14 @@ def repair_greedy(pr, sol, pool, rng, noise=0.0):
     """
     noisy = noise > 0.0 and rng is not None
     remaining = list(pool)
-    ctx = _RepairContext(pr, sol,
-                         use_cache=INSERTION_CACHE and not noisy,
-                         reduce_robots=not (noisy and EXACT_NOISE_STREAM))
+    ctx = _RepairContext(
+        pr,
+        sol,
+        use_cache=INSERTION_CACHE and not noisy,
+        reduce_robots=not (noisy and EXACT_NOISE_STREAM),
+    )
     while remaining:
-        best = None                      # (delta, k, new_route, claimed, c)
+        best = None  # (delta, k, new_route, claimed, c)
         for c in remaining:
             found = ctx.best(c, rng, noise)
             if found is None:
@@ -868,7 +973,7 @@ def repair_regret2(pr, sol, pool, rng):
     remaining = list(pool)
     ctx = _RepairContext(pr, sol, use_cache=INSERTION_CACHE)
     while remaining:
-        pick = None       # (regret, k, new_route, claimed, c)
+        pick = None  # (regret, k, new_route, claimed, c)
         for c in remaining:
             local = ctx.per_truck(c)
             if not local:
@@ -905,17 +1010,25 @@ def _route_without(route, cset):
                 continue
             mid.append(st)
         else:
-            deploys = [dict(tr, custs=[c for c in tr["custs"]
-                                       if c not in cset])
-                       for tr in st["deploys"]]
+            deploys = [
+                dict(tr, custs=[c for c in tr["custs"] if c not in cset])
+                for tr in st["deploys"]
+            ]
             deploys = [tr for tr in deploys if tr["custs"]]
             mid.append({"kind": "park", "p": st["p"], "deploys": deploys})
     # Retrieval references of the surviving trips decide which parking
     # stops still have a role.
-    refs = {tr["ret_p"] for st in mid if st["kind"] == "park"
-            for tr in st["deploys"]}
-    return [st for st in mid
-            if st["kind"] == "cust" or st["deploys"] or st["p"] in refs]
+    refs = {
+        tr["ret_p"]
+        for st in mid
+        if st["kind"] == "park"
+        for tr in st["deploys"]
+    }
+    return [
+        st
+        for st in mid
+        if st["kind"] == "cust" or st["deploys"] or st["p"] in refs
+    ]
 
 
 def remove_customers(sol, custs):
@@ -964,13 +1077,13 @@ def destroy_worst(pr, sol, q, rng, p=3.0):
         after = 0.0
         for k in sol.routes:
             after += stripped if k == kc else per_truck[k]
-        contrib.append((base - after, c))   # larger = worse placed
+        contrib.append((base - after, c))  # larger = worse placed
     contrib.sort(reverse=True)
     chosen = []
     pool = contrib[:]
     while pool and len(chosen) < q:
         y = rng.random()
-        idx = int((y ** p) * len(pool))
+        idx = int((y**p) * len(pool))
         chosen.append(pool.pop(idx)[1])
     remove_customers(sol, chosen)
     return chosen
@@ -993,15 +1106,16 @@ def destroy_related(pr, sol, q, rng, p=6.0):
     order = pr.related_order
     while len(removed) < q:
         ref = rng.choice(removed)
-        cand = [c for c in order[ref]
-                if c in custs and c not in removed_set]
+        cand = [c for c in order[ref] if c in custs and c not in removed_set]
         y = rng.random()
-        idx = int((y ** p) * len(cand))
+        idx = int((y**p) * len(cand))
         pick = cand[idx]
         removed.append(pick)
         removed_set.add(pick)
     remove_customers(sol, removed)
     return removed
+
+
 DESTROY_OPERATORS = (
     ("random", destroy_random),
     ("worst", destroy_worst),
@@ -1016,8 +1130,9 @@ ACTION_LABELS = tuple(
 ACTION_COUNT = len(ACTION_LABELS)
 
 
-def apply_actor_action(pr, current_solution, action, q_destroy, rng,
-                       noise_amplitude):
+def apply_actor_action(
+    pr, current_solution, action, q_destroy, rng, noise_amplitude
+):
     """Apply one graph-conditioned actor-selected destroy/repair pair.
 
     ``action = destroy_index * 3 + repair_index`` is the PPO action-space
@@ -1028,13 +1143,13 @@ def apply_actor_action(pr, current_solution, action, q_destroy, rng,
         raise TypeError(f"actor action must be an integer, got {action!r}")
     if not 0 <= action < ACTION_COUNT:
         raise ValueError(
-            f"actor action must be in [0, {ACTION_COUNT - 1}], got {action}")
+            f"actor action must be in [0, {ACTION_COUNT - 1}], got {action}"
+        )
     if q_destroy <= 0:
         raise ValueError("q_destroy must be positive")
     destroy_index, repair_index = divmod(action, len(REPAIR_NAMES))
     candidate = current_solution.clone()
-    pool = DESTROY_OPERATORS[destroy_index][1](
-        pr, candidate, q_destroy, rng)
+    pool = DESTROY_OPERATORS[destroy_index][1](pr, candidate, q_destroy, rng)
     if repair_index == 0:
         repair_greedy(pr, candidate, pool, rng, noise=0.0)
     elif repair_index == 1:
@@ -1073,45 +1188,65 @@ class Params:
     time is calculated by the search algorithm.
     """
 
-    def __init__(self, data: ProcessedInstance, config: SharedParams,
-                 size: int):
+    def __init__(
+        self, data: ProcessedInstance, config: SharedParams, size: int
+    ):
         n_customers = int(data.customer_idx.size)
         if n_customers != size:
             raise ValueError(
                 f"requested n{size}, but {data.source_path.name} contains "
-                f"{n_customers} customers")
+                f"{n_customers} customers"
+            )
 
-        source_index = np.asarray([
-            data.depot_index, *data.customer_idx.tolist(),
-            *data.parking_idx.tolist(), data.depot_index,
-        ], dtype=np.int64)
+        source_index = np.asarray(
+            [
+                data.depot_index,
+                *data.customer_idx.tolist(),
+                *data.parking_idx.tolist(),
+                data.depot_index,
+            ],
+            dtype=np.int64,
+        )
         self.source_index = source_index
         self.nodes = np.ascontiguousarray(data.node_xy[source_index])
         self.node_zone = np.ascontiguousarray(data.node_zone[source_index])
         self.labels = tuple(data.node_label[source_index].tolist())
-        self.d = np.ascontiguousarray(data.d[np.ix_(source_index, source_index)])
+        self.d = np.ascontiguousarray(
+            data.d[np.ix_(source_index, source_index)]
+        )
         self.tau_truck_matrix = np.ascontiguousarray(
-            data.tau_truck[np.ix_(source_index, source_index)])
+            data.tau_truck[np.ix_(source_index, source_index)]
+        )
         self.tau_robot_matrix = np.ascontiguousarray(
-            data.tau_robot[np.ix_(source_index, source_index)])
-        for array in (self.nodes, self.node_zone, self.d,
-                      self.tau_truck_matrix, self.tau_robot_matrix):
+            data.tau_robot[np.ix_(source_index, source_index)]
+        )
+        for array in (
+            self.nodes,
+            self.node_zone,
+            self.d,
+            self.tau_truck_matrix,
+            self.tau_robot_matrix,
+        ):
             array.setflags(write=False)
 
         self.C = list(range(1, n_customers + 1))
         first_parking = n_customers + 1
-        self.P = list(range(first_parking,
-                            first_parking + int(data.parking_idx.size)))
+        self.P = list(
+            range(first_parking, first_parking + int(data.parking_idx.size))
+        )
         self.D = len(source_index) - 1
         self.K = list(range(1, config.fleet.n_trucks_for(size) + 1))
         robots = config.fleet.n_robots_per_truck
         self.R_k = {k: list(range(1, robots + 1)) for k in self.K}
-        self.lam = {c: int(value) for c, value in
-                    zip(self.C, data.demand, strict=True)}
-        self.e_c = {c: float(value) for c, value in
-                    zip(self.C, data.e, strict=True)}
-        self.l_c = {c: float(value) for c, value in
-                    zip(self.C, data.l, strict=True)}
+        self.lam = {
+            c: int(value) for c, value in zip(self.C, data.demand, strict=True)
+        }
+        self.e_c = {
+            c: float(value) for c, value in zip(self.C, data.e, strict=True)
+        }
+        self.l_c = {
+            c: float(value) for c, value in zip(self.C, data.l, strict=True)
+        }
         self.alpha_traffic = data.alpha_traffic
         self.alpha_ped = data.alpha_ped
         self.instance_id = str(data.meta["instance_id"])
@@ -1121,9 +1256,11 @@ class Params:
         groups = defaultdict(list)
         for p in self.P:
             groups[self.labels[p].rsplit("#", 1)[0]].append(p)
-        self.park_groups = [groups[key] for key in sorted(
-            groups, key=lambda label: int(label[1:]))]
-        self.copy_to_phys = {}          # copy node -> group index
+        self.park_groups = [
+            groups[key]
+            for key in sorted(groups, key=lambda label: int(label[1:]))
+        ]
+        self.copy_to_phys = {}  # copy node -> group index
         for gi, grp in enumerate(self.park_groups):
             for cp in grp:
                 self.copy_to_phys[cp] = gi
@@ -1133,7 +1270,8 @@ class Params:
         for c in self.C:
             order = sorted(
                 range(len(self.park_groups)),
-                key=lambda gi: self.dist(c, self.park_groups[gi][0]))
+                key=lambda gi: self.dist(c, self.park_groups[gi][0]),
+            )
             self.phys_near[c] = order
 
         self.s_kc = config.truck.service_time_min
@@ -1147,23 +1285,27 @@ class Params:
         self.gamma_late = config.lateness_cost_per_min
         self.gamma_fixed = config.truck.fixed_cost
         self.gammahat_fixed = config.robot.fixed_cost
-        self.truck_arc_coef = (config.truck.fuel_cost_per_min
-                               + config.truck.env_cost_per_min)
-        self.robot_arc_coef = (config.robot.fuel_cost_per_min
-                               + config.robot.env_cost_per_min)
+        self.truck_arc_coef = (
+            config.truck.fuel_cost_per_min + config.truck.env_cost_per_min
+        )
+        self.robot_arc_coef = (
+            config.robot.fuel_cost_per_min + config.robot.env_cost_per_min
+        )
 
         # ---- flat lookup tables read by the evaluator ----
         # The search reads arcs millions of times per run, and nested
         # Python lists index far faster than numpy scalars behind an
         # accessor method. Built once per instance, never mutated.
         self.dl = [[float(v) for v in row] for row in self.d.tolist()]
-        self.ttl = [[float(v) for v in row]
-                    for row in self.tau_truck_matrix.tolist()]
-        self.trl = [[float(v) for v in row]
-                    for row in self.tau_robot_matrix.tolist()]
+        self.ttl = [
+            [float(v) for v in row] for row in self.tau_truck_matrix.tolist()
+        ]
+        self.trl = [
+            [float(v) for v in row] for row in self.tau_robot_matrix.tolist()
+        ]
         n_nodes = self.D + 1
-        self.lam_arr = [0] * n_nodes      # demand, indexed by node id
-        self.lc_arr = [0.0] * n_nodes     # due time, indexed by node id
+        self.lam_arr = [0] * n_nodes  # demand, indexed by node id
+        self.lc_arr = [0.0] * n_nodes  # due time, indexed by node id
         for c in self.C:
             self.lam_arr[c] = self.lam[c]
             self.lc_arr[c] = self.l_c[c]
@@ -1173,10 +1315,14 @@ class Params:
         # (ties break on the customer index, which is the iteration order
         # of the small integer set the operator used to sort).
         self.related_order = {
-            a: sorted(self.C,
-                      key=lambda b: self.dl[a][b]
-                      + 0.1 * abs(self.l_c[a] - self.l_c[b]))
-            for a in self.C}
+            a: sorted(
+                self.C,
+                key=lambda b: (
+                    self.dl[a][b] + 0.1 * abs(self.l_c[a] - self.l_c[b])
+                ),
+            )
+            for a in self.C
+        }
 
     def dist(self, i, j):
         return float(self.d[i, j])
@@ -1196,8 +1342,9 @@ def truck_only_initial(pr, rng):
     sol = Solution(pr.K)
     ok = repair_greedy(pr, sol, list(pr.C), rng)
     if not ok:
-        raise RuntimeError("initial solution failed — check truck "
-                           "capacity/range")
+        raise RuntimeError(
+            "initial solution failed — check truck capacity/range"
+        )
     return sol
 
 
@@ -1216,8 +1363,10 @@ def _congestion_score(pr):
     tspan = max(float(ta.max() - ta.min()), 1e-12)
     pmin = float(pa.min())
     pspan = max(float(pa.max() - pa.min()), 1e-12)
-    return {c: (ta[zc[c]] - tmin) / tspan - (pa[zc[c]] - pmin) / pspan
-            for c in pr.C}
+    return {
+        c: (ta[zc[c]] - tmin) / tspan - (pa[zc[c]] - pmin) / pspan
+        for c in pr.C
+    }
 
 
 def _build_trips(pr, gi, custs, leftovers):
@@ -1236,15 +1385,17 @@ def _build_trips(pr, gi, custs, leftovers):
         trip, last, ddist = [], p0, 0.0
         while rem and len(trip) < pr.beta_robot:
             nxt = min(rem, key=lambda c: pr.tau_robot(last, c))
-            if (ddist + pr.dist(last, nxt) + pr.dist(nxt, p1)
-                    > pr.phi_hat + 1e-9):
+            if (
+                ddist + pr.dist(last, nxt) + pr.dist(nxt, p1)
+                > pr.phi_hat + 1e-9
+            ):
                 break
             ddist += pr.dist(last, nxt)
             trip.append(nxt)
             rem.remove(nxt)
             last = nxt
-        if not trip:            # defensive guard: even a solo round
-            leftovers.append(rem.pop(0))    # trip is impossible
+        if not trip:  # defensive guard: even a solo round
+            leftovers.append(rem.pop(0))  # trip is impossible
             continue
         ddist += pr.dist(last, p1)
         trips.append((trip, ddist))
@@ -1282,12 +1433,12 @@ def congestion_aware_initial(pr, rng):
             grp = pr.park_groups[gi]
             # a waiting-style stop pair needs two copies, plus
             # round-trip battery feasibility
-            if (len(grp) >= 2
-                    and 2.0 * pr.dist(grp[0], c) <= pr.phi_hat + 1e-9):
+            if len(grp) >= 2 and 2.0 * pr.dist(grp[0], c) <= pr.phi_hat + 1e-9:
                 cand.append((c, gi))
                 break
-    cand.sort(key=lambda t: (-scores[t[0]],
-                             pr.dist(pr.park_groups[t[1]][0], t[0])))
+    cand.sort(
+        key=lambda t: (-scores[t[0]], pr.dist(pr.park_groups[t[1]][0], t[0]))
+    )
 
     by_group = defaultdict(list)
     for c, gi in cand:
@@ -1298,8 +1449,9 @@ def congestion_aware_initial(pr, rng):
     leftovers = []
     robot_budget = {(k, r): pr.phi_hat for k in pr.K for r in pr.R_k[k]}
     pairs = {k: [] for k in pr.K}
-    order = sorted(by_group,
-                   key=lambda gi: pr.tau_truck(0, pr.park_groups[gi][0]))
+    order = sorted(
+        by_group, key=lambda gi: pr.tau_truck(0, pr.park_groups[gi][0])
+    )
     for ti, gi in enumerate(order):
         grp = pr.park_groups[gi]
         k = pr.K[ti % len(pr.K)]
@@ -1307,24 +1459,33 @@ def congestion_aware_initial(pr, rng):
         for custs, ddist in _build_trips(pr, gi, by_group[gi], leftovers):
             # no duplicate robot within one stop pair (custody: no
             # re-deploy while away)
-            r = next((r for r in pr.R_k[k]
-                      if robot_budget[(k, r)] >= ddist - 1e-9
-                      and all(d["r"] != r for d in deploys)), None)
+            r = next(
+                (
+                    r
+                    for r in pr.R_k[k]
+                    if robot_budget[(k, r)] >= ddist - 1e-9
+                    and all(d["r"] != r for d in deploys)
+                ),
+                None,
+            )
             if r is None:
                 leftovers.extend(custs)
                 continue
             robot_budget[(k, r)] -= ddist
             deploys.append({"r": r, "custs": custs, "ret_p": grp[1]})
         if deploys:
-            pairs[k].append((
-                {"kind": "park", "p": grp[0], "deploys": deploys},
-                {"kind": "park", "p": grp[1], "deploys": []}))
+            pairs[k].append(
+                (
+                    {"kind": "park", "p": grp[0], "deploys": deploys},
+                    {"kind": "park", "p": grp[1], "deploys": []},
+                )
+            )
 
     sol = Solution(pr.K)
     for k in pr.K:
         sol.routes[k] = [st for pair in pairs[k] for st in pair]
         _, ok, _, _ = eval_truck(pr, k, sol.routes[k])
-        if not ok:      # defensive: dissolve skeleton into truck pool
+        if not ok:  # defensive: dissolve skeleton into truck pool
             for pair in pairs[k]:
                 for tr in pair[0]["deploys"]:
                     leftovers.extend(tr["custs"])
@@ -1371,7 +1532,9 @@ class InstanceCache:
         self.size = size
         self.params_path = str(
             (DEFAULT_PARAMS_PATH if params_path is None else Path(params_path))
-            .expanduser().resolve())
+            .expanduser()
+            .resolve()
+        )
         self.config = load_params(self.params_path)
         self.fleet = {
             "n_trucks": self.config.fleet.n_trucks_for(size),
@@ -1383,7 +1546,9 @@ class InstanceCache:
         """Load an absolute instance reference, caching it only in this worker."""
         path = Path(reference)
         if not path.is_absolute():
-            raise ValueError("worker instance reference must be an absolute path")
+            raise ValueError(
+                "worker instance reference must be an absolute path"
+            )
         return _cached_params(self._cache, path, self.params_path, self.size)
 
     def __len__(self):
@@ -1397,12 +1562,21 @@ class InstanceCache:
 class DirectoryInstanceProvider:
     """Load validated NPZ files and expose immutable ALNS problems."""
 
-    def __init__(self, size, params_path=None, tag=None, seed=0,
-                 train_count=None, split="all"):
+    def __init__(
+        self,
+        size,
+        params_path=None,
+        tag=None,
+        seed=0,
+        train_count=None,
+        split="all",
+    ):
         if split not in {"train", "test", "all"}:
             raise ValueError("split must be 'train', 'test', or 'all'")
         if tag is not None and not _TAG_PATTERN.fullmatch(tag):
-            raise ValueError("invalid tag; use letters, digits, '.', '_', or '-'")
+            raise ValueError(
+                "invalid tag; use letters, digits, '.', '_', or '-'"
+            )
         self.size = size
         self.tag = tag
         self.params_path = params_path
@@ -1415,28 +1589,37 @@ class DirectoryInstanceProvider:
         data_dir = "processed" if tag is None else f"processed_{tag}"
         self.data_root = REPO_ROOT / "data" / data_dir
         self._cache = {}
-        self._train_all = (self._load("train")
-                           if split in {"train", "all"} else [])
-        self.test = (self._load("test")
-                     if split in {"test", "all"} else [])
-        if train_count is not None and (not self._train_all
-                                        or not 0 < train_count <= len(
-                                            self._train_all)):
+        self._train_all = (
+            self._load("train") if split in {"train", "all"} else []
+        )
+        self.test = self._load("test") if split in {"test", "all"} else []
+        if train_count is not None and (
+            not self._train_all or not 0 < train_count <= len(self._train_all)
+        ):
             raise ValueError(
                 f"train_count must be in [1, {len(self._train_all)}], "
-                f"got {train_count}")
-        self.train = (self._train_all if train_count is None
-                      else self._train_all[:train_count])
+                f"got {train_count}"
+            )
+        self.train = (
+            self._train_all
+            if train_count is None
+            else self._train_all[:train_count]
+        )
         held_out = len(self._train_all) - len(self.train)
-        split_note = (f" / {held_out} validation" if held_out else "")
-        print(f"[data] n{size}: {len(self.train)} train{split_note} / "
-              f"{len(self.test)} test instances loaded "
-              f"(fleet: {self.fleet})", flush=True)
+        split_note = f" / {held_out} validation" if held_out else ""
+        print(
+            f"[data] n{size}: {len(self.train)} train{split_note} / "
+            f"{len(self.test)} test instances loaded "
+            f"(fleet: {self.fleet})",
+            flush=True,
+        )
 
     def _load(self, split):
         path = self.data_root / split / f"n{self.size}"
         if not path.is_dir():
-            raise FileNotFoundError(f"processed instance directory not found: {path}")
+            raise FileNotFoundError(
+                f"processed instance directory not found: {path}"
+            )
         files = sorted(path.glob("*.npz"))
         if not files:
             raise FileNotFoundError(f"no instances under {path}")
@@ -1447,10 +1630,15 @@ class DirectoryInstanceProvider:
 
     def worker_spec(self):
         """Primitive loader settings; never send provider state or cached Params."""
-        params_path = (DEFAULT_PARAMS_PATH if self.params_path is None
-                       else Path(self.params_path))
-        return {"size": self.size,
-                "params_path": str(params_path.expanduser().resolve())}
+        params_path = (
+            DEFAULT_PARAMS_PATH
+            if self.params_path is None
+            else Path(self.params_path)
+        )
+        return {
+            "size": self.size,
+            "params_path": str(params_path.expanduser().resolve()),
+        }
 
     @property
     def checkpoint_metadata(self):
@@ -1486,5 +1674,9 @@ class DirectoryInstanceProvider:
         if not paths:
             raise ValueError(
                 f"empty validation split [{start}:{end}] from "
-                f"{len(self._train_all)} train instances")
+                f"{len(self._train_all)} train instances"
+            )
         return [(path.stem, self._params(path)) for path in paths]
+
+
+DESTROY = DESTROY_OPERATORS

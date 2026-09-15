@@ -1,48 +1,25 @@
-# experiment outputs (directory structure kept via .gitkeep)
-output/*/*
-!output/*/.gitkeep
-*.csv
-*.json
-*.svg
-*.npz
-CHANGELOG.md
-MILP_VERIFICATION.md
-CLAUDE.md
-
-# trained model checkpoints / training logs (models/)
-*.pt
-
-# python
-__pycache__/
-*.pyc
-*.egg-info/
-.venv/
-.pytest_cache/
-
-# logs (gurobi, exact solver, training console dumps)
+# Private data and experiment artifacts remain on each machine.
+/data/
+/models/
+/output/
+/logs/
+/logs_n*/
+*.lock
 *.log
 
-# os
-.DS_Store
-
-# temporary learning/debug scripts
-temp_*
-
-# instance data (boundaries, cells, raw + processed instances) is not
-# public and is never committed
-data/
-
-# interactive route maps written by scripts/plot_result.py
-*.html
-
-# python build artifacts
+# Python environments, caches and build output.
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
 build/
 dist/
-venv/
 
-# editors
+# Local editor and OS files.
 .vscode/
 .idea/
-
-# reference-only spec, never committed
-docs/ppo_spec.md
+.DS_Store
+Thumbs.db

@@ -32,11 +32,13 @@ import numpy as np
 import yaml
 from yaml.constructor import ConstructorError
 
+from common.sizes import SUPPORTED_SIZES
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_PARAMS_PATH = REPO_ROOT / "configs" / "params.yaml"
 CELL_COORD_PATH = REPO_ROOT / "data" / "cells_ulsan_namgu.csv"
 DONG_POLYGON_PATH = REPO_ROOT / "data" / "ulsan_namgu_dong_boundaries.geojson"
-SUPPORTED_SIZES = frozenset({5, 10, 20, 50, 100})
+
 POLYGON_ZONE_METHOD = "point_in_polygon_with_nearest_katec_cell_fallback"
 CELL_ZONE_METHOD = "nearest_katec_cell_zone"
 
@@ -93,9 +95,13 @@ class FleetParams:
         if not isinstance(self.n_trucks, Mapping):
             raise TypeError("fleet.n_trucks must be a size-to-count mapping")
         copied = dict(self.n_trucks)
-        if set(copied) != SUPPORTED_SIZES:
+        # Older YAML files remain usable for their configured sizes.
+        # A newly requested size must have an explicit fleet entry.
+        required_sizes = {5, 10, 20, 50, 100}
+        if not required_sizes <= set(copied) <= set(SUPPORTED_SIZES):
             raise ValueError(
-                "fleet.n_trucks must contain exactly sizes 5, 10, 20, 50, and 100"
+                "fleet.n_trucks must contain sizes 5, 10, 20, 50, and 100; "
+                f"additional sizes may be configured from {SUPPORTED_SIZES}"
             )
         for size, count in copied.items():
             _require_int(size, "fleet.n_trucks size")
@@ -110,8 +116,16 @@ class FleetParams:
         try:
             return self.n_trucks[size]
         except KeyError as exc:
+            if size in SUPPORTED_SIZES:
+                raise ValueError(
+                    f"fleet.n_trucks[{size}] must be configured "
+                    f"before running n{size} experiments"
+                ) from exc
+            choices = ", ".join(
+                str(value) for value in sorted(SUPPORTED_SIZES)
+            )
             raise ValueError(
-                f"unsupported size {size}; choose 5, 10, 20, 50, or 100"
+                f"unsupported size {size}; choose from {choices}"
             ) from exc
 
 

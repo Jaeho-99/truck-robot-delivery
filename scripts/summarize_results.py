@@ -9,10 +9,9 @@ Run from the repository root::
     python scripts/summarize_results.py
     python scripts/summarize_results.py --size 20
 
-Run this script after each new training or test setting. Model-specific
-artifact filenames are intentionally simple and are overwritten when exactly
-the same model/reward/tag slot is executed again; rows already copied into the
-cumulative tables remain available.
+Both the legacy size directories and ``n{size}/runs/{label}`` are discovered.
+Run labels are kept separate in the cumulative tables, and label-specific
+checkpoints retain their ``_run-{label}`` suffix.
 """
 
 from __future__ import annotations
@@ -21,11 +20,16 @@ import argparse
 import csv
 import json
 import math
-import re
 import statistics
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping
+
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+from common.sizes import SIZE_PATTERN, SUPPORTED_SIZES
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 OUTPUT_DIR = REPO_ROOT / "output"
@@ -36,7 +40,6 @@ METHOD_ORDER = ("alns", "ppo_alns", "gnn_ppo_alns")
 
 TRAINED_METHODS = ("gnn_ppo_alns", "ppo_alns")
 COMPARED_METHODS = METHOD_ORDER
-SIZE_PATTERN = re.compile(r"n(5|10|20|50|100)\Z")
 
 TRAINING_TABLE = "training_time_n{size}.csv"
 COMPARISON_TABLE = "comparison_n{size}.csv"
@@ -45,6 +48,7 @@ TRAINING_HEAD = (
     "recorded_at",
     "model",
     "tag",
+    "run_label",
     "size",
     "reward_mode",
     "train_time_s",
@@ -58,6 +62,7 @@ COMPARISON_HEAD = (
     "recorded_at",
     "model",
     "tag",
+    "run_label",
     "size",
     "reward_mode",
     "selection_mode",
@@ -162,18 +167,20 @@ def _validate_metadata(
     size: int,
     tag: str,
     reward_mode: str | None,
+    run_label: str = "",
 ) -> None:
     """Reject stale or misnamed metadata before joining it to a result."""
     expected = {
         "model": method,
         "size": size,
         "tag": tag,
+        "run_label": run_label,
     }
     if reward_mode is not None:
         expected["reward_mode"] = reward_mode
     for field, value in expected.items():
         stored = metadata.get(field)
-        if field == "tag":
+        if field in {"tag", "run_label"}:
             stored = stored or ""
         if stored != value:
             raise ValueError(
@@ -184,7 +191,7 @@ def _validate_metadata(
 
 def _method_and_tag(directory_name: str) -> tuple[str, str] | None:
     """Return the canonical method and optional semantic directory tag."""
-    for method in ("gnn_ppo_alns", "ppo_alns", "alns", "exact"):
+    for method in ("gnn_ppo_alns", "ppo_alns", "alns"):
         if directory_name == method:
             return method, ""
         if directory_name.startswith(f"{method}_"):
@@ -209,15 +216,34 @@ def _runs(methods: tuple[str, ...]) -> list[tuple[str, str, int, Path]]:
         ):
             match = SIZE_PATTERN.fullmatch(size_dir.name)
             if match is not None:
-                found.append((method, tag, int(match.group(1)), size_dir))
+                size = int(match.group(1))
+                found.append((method, tag, size, size_dir))
+                runs_dir = size_dir / "runs"
+                if runs_dir.is_dir():
+                    found.extend(
+                        (method, tag, size, run_dir)
+                        for run_dir in sorted(runs_dir.iterdir())
+                        if run_dir.is_dir()
+                    )
     return found
 
 
+def _run_label(directory: Path) -> str:
+    return directory.name if directory.parent.name == "runs" else ""
+
+
 def _checkpoint_path(
-    method: str, tag: str, size: int, reward_token: str
+    method: str,
+    tag: str,
+    size: int,
+    reward_token: str,
+    run_label: str = "",
 ) -> Path:
     suffix = f"_{tag}" if tag else ""
-    return MODELS_DIR / f"{method}_n{size}_{reward_token}{suffix}.pt"
+    run_suffix = f"_run-{run_label}" if run_label else ""
+    return (
+        MODELS_DIR / f"{method}_n{size}_{reward_token}{suffix}{run_suffix}.pt"
+    )
 
 
 def _checkpoint_fields(path: Path) -> dict[str, Any]:
@@ -271,6 +297,7 @@ def _training_rows(
     by_size: dict[int, list[dict[str, Any]]] = {}
     seen_checkpoints: set[Path] = set()
     for method, tag, size, directory in _runs(TRAINED_METHODS):
+        run_label = _run_label(directory)
         for log_path in sorted(directory.glob("train_reward_*.csv")):
             try:
                 reward_token = log_path.stem[len("train_") :]
@@ -285,7 +312,7 @@ def _training_rows(
                     _finite_float(item, "elapsed_s", log_path) for item in log
                 ]
                 checkpoint = _checkpoint_path(
-                    method, tag, size, reward_token
+                    method, tag, size, reward_token, run_label
                 ).resolve()
                 seen_checkpoints.add(checkpoint)
                 metadata_path = (
@@ -304,6 +331,7 @@ def _training_rows(
                         size=size,
                         tag=tag,
                         reward_mode=reward_mode,
+                        run_label=run_label,
                     )
                     elapsed = float(metadata["train_time_s"])
                     if not math.isfinite(elapsed) or elapsed < 0.0:
@@ -329,6 +357,7 @@ def _training_rows(
                     "recorded_at": recorded_at,
                     "model": method,
                     "tag": tag,
+                    "run_label": run_label,
                     "size": size,
                     "reward_mode": reward_mode,
                     "train_time_s": round(elapsed, 1),
@@ -401,6 +430,7 @@ def _legacy_selection_mode(
 def _comparison_rows(now: str) -> dict[int, list[dict[str, Any]]]:
     by_size: dict[int, list[dict[str, Any]]] = {}
     for method, tag, size, directory in _runs(COMPARED_METHODS):
+        run_label = _run_label(directory)
         for result_path, reward_token in _result_files(method, directory):
             try:
                 results = _read_csv(result_path)
@@ -444,6 +474,7 @@ def _comparison_rows(now: str) -> dict[int, list[dict[str, Any]]]:
                         reward_mode=(
                             reward_mode if method != "alns" else None
                         ),
+                        run_label=run_label,
                     )
                     recorded_at = str(metadata.get("completed_at") or now)
                     checkpoint = str(metadata.get("checkpoint") or "")
@@ -456,7 +487,7 @@ def _comparison_rows(now: str) -> dict[int, list[dict[str, Any]]]:
                     )
                     if method != "alns":
                         checkpoint_path = _checkpoint_path(
-                            method, tag, size, reward_token
+                            method, tag, size, reward_token, run_label
                         ).resolve()
                         checkpoint = str(checkpoint_path)
                         settings = _checkpoint_fields(checkpoint_path)
@@ -466,6 +497,7 @@ def _comparison_rows(now: str) -> dict[int, list[dict[str, Any]]]:
                     "recorded_at": recorded_at,
                     "model": method,
                     "tag": tag,
+                    "run_label": run_label,
                     "size": size,
                     "reward_mode": reward_mode,
                     "selection_mode": selection_mode,
@@ -595,7 +627,7 @@ def main() -> None:
     parser.add_argument(
         "--size",
         type=int,
-        choices=(5, 10, 20, 50, 100),
+        choices=SUPPORTED_SIZES,
         action="append",
         help="only summarize this size (repeatable; default: all found)",
     )

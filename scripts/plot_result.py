@@ -1,4 +1,4 @@
-"""Plot one exact/ALNS result JSON on the Ulsan Nam-gu map.
+"""Plot an exact/ALNS/PPO result JSON on the Ulsan Nam-gu map.
 
 The result JSON stores routes but deliberately does not duplicate instance
 geometry.  This script infers the matching ``data/processed/test`` NPZ and
@@ -7,7 +7,7 @@ them only for visualization.
 
 Example (run from the repository root)::
 
-    python scripts/plot_result.py output/exact/n5/test_n5_000.json
+    python scripts/plot_result.py output/alns/n5/runs/demo/test_n5_000_s0.json
 
 Two files are written next to the result: the static map
 ``test_n5_000_map.svg`` and ``test_n5_000_map.html``, an interactive
@@ -18,12 +18,13 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
+import sys
 from pathlib import Path
 from typing import Any, Iterable
 
 import matplotlib
 import numpy as np
+from matplotlib import font_manager
 from pyproj import CRS, Transformer
 
 matplotlib.use("Agg")
@@ -35,15 +36,28 @@ from matplotlib.lines import Line2D  # noqa: E402
 from matplotlib.patches import Circle  # noqa: E402
 from matplotlib.patches import Polygon as MplPolygon  # noqa: E402
 
-matplotlib.rcParams["font.family"] = ["AppleGothic", "DejaVu Sans"]
+# Select an installed font on either OS without requiring an Apple font.
+_installed_fonts = {font.name for font in font_manager.fontManager.ttflist}
+matplotlib.rcParams["font.family"] = next(
+    (
+        name
+        for name in ("Malgun Gothic", "Noto Sans CJK KR", "NanumGothic")
+        if name in _installed_fonts
+    ),
+    "DejaVu Sans",
+)
 matplotlib.rcParams["axes.unicode_minus"] = False
 matplotlib.rcParams["svg.fonttype"] = "none"  # editable text in the SVG
 
 
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+from common.sizes import SIZE_PATTERN, SUPPORTED_SIZES  # noqa: E402
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_BOUNDARY = REPO_ROOT / "data" / "ulsan_namgu_dong_boundaries.geojson"
 METHODS = ("gnn_ppo_alns", "ppo_alns", "exact", "alns")
-SIZE_PATTERN = re.compile(r"n(5|10|20|50|100)\Z")
 
 # This must match the legacy KATEC definition used by preprocess.py.
 KATEC_CRS = CRS.from_proj4(
@@ -76,8 +90,20 @@ def _load_json(path: Path) -> dict[str, Any]:
     return value
 
 
+def _size_directory(result_path: Path) -> Path:
+    directory = result_path.parent
+    if directory.parent.name == "runs":
+        directory = directory.parent.parent
+    if SIZE_PATTERN.fullmatch(directory.name) is None:
+        raise ValueError(
+            f"result must be under nSIZE with SIZE in {SUPPORTED_SIZES}, "
+            "optionally inside runs/LABEL"
+        )
+    return directory
+
+
 def _method_and_tag(result_path: Path) -> tuple[str, str | None]:
-    directory = result_path.parent.parent.name
+    directory = _size_directory(result_path).parent.name
     for method in METHODS:
         if directory == method:
             return method, None
@@ -86,16 +112,14 @@ def _method_and_tag(result_path: Path) -> tuple[str, str | None]:
             return method, directory[len(prefix) :]
     expected = ", ".join(METHODS)
     raise ValueError(
-        f"result must be under output/{{{expected}}}/nSIZE: {result_path}"
+        f"result must be under output/{{{expected}}}/nSIZE"
+        f"[/runs/LABEL]: {result_path}"
     )
 
 
 def _size_from_path(result_path: Path) -> int:
-    match = SIZE_PATTERN.fullmatch(result_path.parent.name)
-    if match is None:
-        raise ValueError(
-            "result parent directory must be n5, n10, n20, n50, or n100"
-        )
+    match = SIZE_PATTERN.fullmatch(_size_directory(result_path).name)
+    assert match is not None
     return int(match.group(1))
 
 
@@ -1007,8 +1031,7 @@ def plot_result(
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Plot one result JSON from exact, ALNS, PPO-ALNS, or "
-        "GNN-PPO-ALNS"
+        description="Plot one result JSON from exact, ALNS, PPO-ALNS, or GNN-PPO-ALNS"
     )
     parser.add_argument(
         "result",

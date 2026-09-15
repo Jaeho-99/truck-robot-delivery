@@ -1,8 +1,8 @@
 """Training runtime diagnostics without device work at module import time."""
 
-from importlib.metadata import PackageNotFoundError, version
 import platform
 import sys
+from importlib.metadata import PackageNotFoundError, version
 
 
 def _package_version(name: str) -> str:
@@ -57,28 +57,37 @@ def report_training_runtime(device: str) -> dict[str, object]:
             f"Requested --device cuda with Python {sys.executable!r}, "
             f"PyTorch {torch.__version__}, and torch.version.cuda="
             f"{torch.version.cuda!r}. Verify that this interpreter uses the "
-            "Windows CUDA-enabled PyTorch environment and a compatible NVIDIA "
+            "CUDA-enabled PyTorch environment and a compatible NVIDIA "
             "driver. Installing the CUDA Toolkit alone does not enable CUDA "
             "in a CPU-only PyTorch build. Use --device cpu for an explicit CPU "
             "run; no automatic CPU fallback was applied."
         )
         if torch.version.cuda is None:
-            raise RuntimeError("This PyTorch build has no CUDA support. " + guidance)
+            raise RuntimeError(
+                "This PyTorch build has no CUDA support. " + guidance
+            )
         try:
             runtime["cuda_available"] = torch.cuda.is_available()
             if not runtime["cuda_available"]:
                 raise RuntimeError("torch.cuda.is_available() returned False")
             device_index = torch.cuda.current_device()
             properties = torch.cuda.get_device_properties(device_index)
-            runtime.update({
-                "cuda_device_index": device_index,
-                "cuda_device_name": properties.name,
-                "cuda_device_capability": [properties.major, properties.minor],
-                "cuda_device_memory_bytes": properties.total_memory,
-                "torch_cuda_arch_list": torch.cuda.get_arch_list(),
-            })
+            runtime.update(
+                {
+                    "cuda_device_index": device_index,
+                    "cuda_device_name": properties.name,
+                    "cuda_device_capability": [
+                        properties.major,
+                        properties.minor,
+                    ],
+                    "cuda_device_memory_bytes": properties.total_memory,
+                    "torch_cuda_arch_list": torch.cuda.get_arch_list(),
+                }
+            )
         except (RuntimeError, OSError, AssertionError) as exc:
-            raise RuntimeError(f"CUDA device initialization failed: {exc}. {guidance}") from exc
+            raise RuntimeError(
+                f"CUDA device initialization failed: {exc}. {guidance}"
+            ) from exc
         print(
             f"[runtime] device=cuda:{runtime['cuda_device_index']} "
             f"GPU={runtime['cuda_device_name']} "

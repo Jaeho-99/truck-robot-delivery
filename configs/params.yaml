@@ -15,6 +15,10 @@ fleet:
     20: 2
     50: 4
     100: 7
+    150: 10
+    200: 12
+    250: 15
+    300: 17
   n_robots_per_truck: 2
 
 truck:
@@ -40,7 +44,6 @@ robot:
 lateness:
   cost_per_min: 0.0958
 
-# The exact solver keeps its constraint-specific, instance-derived Big-M values.
 demand_per_customer: 1
 
 time_window:
